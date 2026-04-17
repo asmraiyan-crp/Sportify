@@ -3,15 +3,23 @@ import os
 from flask import Flask
 
 from api.v1.auth import auth_bp
+from api.v1.testapi import test_bp
 
 
 def create_app() -> Flask:
 	app = Flask(__name__)
 
-	app.config["SUPABASE_URL"] = os.getenv("SUPABASE_URL", "").rstrip("/")
-	app.config["SUPABASE_ANON_KEY"] = os.getenv("SUPABASE_ANON_KEY", "")
-
+	# Register blueprints
 	app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
+	app.register_blueprint(test_bp, url_prefix="/api/v1/test")
+
+	# Initialize database (create tables if they don't exist)
+	try:
+		from database import init_db
+		with app.app_context():
+			init_db()
+	except Exception as e:
+		print(f"Warning: Could not initialize database: {e}")
 
 	return app
 
