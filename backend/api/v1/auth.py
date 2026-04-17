@@ -1,534 +1,463 @@
 """
-Authentication module with JWT tokens and password hashing.
-Handles user registration, login, token generation, and validation.
+auth.py – Authentication endpoints for Sportify.
+
+Handles:
+  • POST /auth/register – Register new user
+  • POST /auth/login – Login with email/password
+  • POST /auth/logout – Logout (clear session)
+  • POST /auth/password-reset – Request password reset email
+  • POST /auth/password-reset/confirm – Confirm password reset with token
+  • GET /users/me – Get current user profile (requires auth)
+  • PUT /users/me – Update current user profile (requires auth)
+
+Uses JWT tokens stored in httpOnly cookies.
+Manual password hashing (bcrypt) — no Supabase Auth.
 """
 
-import re
-import os
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
-from uuid import UUID
+from flask import Blueprint, request, jsonify, make_response, g
+from passlib.context import CryptContext
+from pydantic import ValidationError
+from datetime import datetime, timezone
+from uuid import uuid4
 
-import jwt
-import bcrypt
-from flask import Blueprint, jsonify, request
-from functools import wraps
+# Database and Models
+from database import SessionLocal
+import model.model as models
 
-from database import get_session
-from model.model import Profile
+# Pydantic Schemas
+from model.schemas import (
+    RegisterCreate,
+    LoginCreate,
+    TokenOut,
+    ProfileOut,
+    ProfileUpdate,
+    PasswordResetRequest,
+    PasswordResetConfirm,
+    AdminRoleUpdate,
+)
 
-auth_bp = Blueprint("auth", __name__)
+# Authentication Core
+from core.auth import create_access_token, require_auth, require_role
 
-# Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 7
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# UTILITY FUNCTIONS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def success(data, status=200):
-	"""Return success response."""
-	return jsonify({"ok": True, "data": data, "error": None}), status
+# Create the Blueprint
+auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def failure(code: str, message: str, status: int, details=None):
-	"""Return error response."""
-	err = {"code": code, "message": message}
-	if details is not None:
-		err["details"] = details
-	return jsonify({"ok": False, "data": None, "error": err}), status
+def get_db():
+    """Get database session."""
+    return SessionLocal()
 
 
-def hash_password(password: str) -> str:
-	"""Hash password using bcrypt."""
-	salt = bcrypt.gensalt()
-	return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+# ─────────────────────────────────────────────────────────────────────────────
+# REGISTER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@auth_bp.route("/register", methods=["POST"])
+def register():
+    """
+    Register a new user.
+    
+    Request body:
+        {
+            "email": "user@example.com",
+            "password": "SecurePass123",
+            "display_name": "John Doe"  (optional)
+        }
+    
+    Response: 201 Created
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "display_name": "John Doe",
+            "role": "fan",
+            "is_active": true
+        }
+    """
+    db = get_db()
+    try:
+        # 1. Validate with Pydantic
+        json_data = request.get_json() or {}
+        user_data = RegisterCreate(**json_data)
+        
+        # 2. Check if email already exists
+        existing = db.query(models.Profile).filter(
+            models.Profile.email == user_data.email
+        ).first()
+        if existing:
+            return jsonify({
+                "error": "Email already registered.",
+                "code": "EMAIL_EXISTS"
+            }), 409
+        
+        # 3. Hash password
+        hashed_password = pwd_context.hash(user_data.password)
+        
+        # 4. Create new profile
+        new_profile = models.Profile(
+            id=uuid4(),
+            email=user_data.email,
+            password_hash=hashed_password,
+            display_name=user_data.display_name,
+            role="fan",  # Default role
+            is_active=True,
+            created_at=datetime.now(tz=timezone.utc),
+            updated_at=datetime.now(tz=timezone.utc),
+        )
+        
+        db.add(new_profile)
+        db.commit()
+        db.refresh(new_profile)
+        
+        # 5. Return profile as per ProfileOut schema
+        return jsonify(ProfileOut.model_validate(new_profile).model_dump()), 201
+        
+    except ValidationError as err:
+        db.rollback()
+        return jsonify({
+            "error": "Validation error",
+            "details": err.errors()
+        }), 422
+    except Exception as err:
+        db.rollback()
+        return jsonify({"error": str(err)}), 500
+    finally:
+        db.close()
 
 
-def verify_password(password: str, hashed: str) -> bool:
-	"""Verify password against hash."""
-	try:
-		return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-	except Exception:
-		return False
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGIN
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def create_access_token(user_id: UUID, expires_in_minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES) -> str:
-	"""Create JWT access token."""
-	payload = {
-		'sub': str(user_id),
-		'type': 'access',
-		'exp': datetime.utcnow() + timedelta(minutes=expires_in_minutes),
-		'iat': datetime.utcnow()
-	}
-	return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-
-def create_refresh_token(user_id: UUID, expires_in_days: int = REFRESH_TOKEN_EXPIRE_DAYS) -> str:
-	"""Create JWT refresh token."""
-	payload = {
-		'sub': str(user_id),
-		'type': 'refresh',
-		'exp': datetime.utcnow() + timedelta(days=expires_in_days),
-		'iat': datetime.utcnow()
-	}
-	return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-
-def verify_token(token: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
-	"""Verify JWT token and return decoded payload."""
-	try:
-		payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-		return True, payload, None
-	except jwt.ExpiredSignatureError:
-		return False, None, "Token has expired"
-	except jwt.InvalidTokenError as e:
-		return False, None, f"Invalid token: {str(e)}"
-
-
-def extract_user_id_from_token(token: str) -> Tuple[bool, Optional[UUID], Optional[str]]:
-	"""Extract user_id from token."""
-	valid, payload, error = verify_token(token)
-	if not valid:
-		return False, None, error
-	
-	try:
-		user_id = UUID(payload.get('sub'))
-		return True, user_id, None
-	except (ValueError, TypeError):
-		return False, None, "Invalid user_id in token"
-
-
-def token_required(f):
-	"""Decorator to protect routes that require authentication."""
-	@wraps(f)
-	def decorated(*args, **kwargs):
-		token = None
-		
-		# Check Authorization header
-		if 'Authorization' in request.headers:
-			auth_header = request.headers['Authorization']
-			try:
-				token = auth_header.split(' ')[1]  # Bearer <token>
-			except IndexError:
-				return failure("INVALID_TOKEN", "Invalid authorization header", 401)
-		
-		if not token:
-			return failure("MISSING_TOKEN", "Authorization token is required", 401)
-		
-		valid, user_id, error = extract_user_id_from_token(token)
-		if not valid:
-			return failure("INVALID_TOKEN", error or "Invalid token", 401)
-		
-		# Store user_id in request context
-		request.user_id = user_id
-		return f(*args, **kwargs)
-	
-	return decorated
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# VALIDATION FUNCTIONS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def validate_signup_payload(payload) -> Tuple[Optional[str], Optional[Dict[str, str]]]:
-	"""Validate signup request payload."""
-	if not isinstance(payload, dict):
-		return "Body must be a JSON object.", None
-
-	email = str(payload.get("email", "")).strip()
-	password = str(payload.get("password", ""))
-	display_name = str(payload.get("display_name", "")).strip()
-
-	errors = {}
-	if not email:
-		errors["email"] = "Email is required."
-	elif not EMAIL_RE.match(email):
-		errors["email"] = "Email format is invalid."
-
-	if not password:
-		errors["password"] = "Password is required."
-	elif len(password) < 8:
-		errors["password"] = "Password must be at least 8 characters."
-
-	if not display_name:
-		errors["display_name"] = "Display name is required."
-	elif len(display_name) < 2 or len(display_name) > 50:
-		errors["display_name"] = "Display name must be between 2 and 50 characters."
-
-	if errors:
-		return "Validation failed.", errors
-
-	return None, {"email": email, "password": password, "display_name": display_name}
-
-
-def validate_login_payload(payload) -> Tuple[Optional[str], Optional[Dict]]:
-	"""Validate login request payload."""
-	if not isinstance(payload, dict):
-		return "Body must be a JSON object.", None
-
-	email = str(payload.get("email", "")).strip()
-	password = str(payload.get("password", ""))
-
-	errors = {}
-	if not email:
-		errors["email"] = "Email is required."
-	elif not EMAIL_RE.match(email):
-		errors["email"] = "Email format is invalid."
-
-	if not password:
-		errors["password"] = "Password is required."
-
-	if errors:
-		return "Validation failed.", errors
-
-	return None, {"email": email, "password": password}
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ENDPOINTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@auth_bp.post("/signup")
-def signup():
-	"""
-	User signup endpoint - creates a new user profile with hashed password.
-	
-	Request body:
-	{
-		"email": "user@example.com",
-		"password": "securepassword123",
-		"display_name": "John Doe"
-	}
-	
-	Response:
-	{
-		"ok": true,
-		"data": {
-			"user_id": "uuid",
-			"email": "user@example.com",
-			"display_name": "John Doe",
-			"role": "fan",
-			"access_token": "jwt_token",
-			"refresh_token": "jwt_token",
-			"token_type": "Bearer"
-		}
-	}
-	"""
-	payload = request.get_json(silent=True)
-	validation_error, validated = validate_signup_payload(payload)
-
-	if validation_error or validated is None:
-		return failure("VALIDATION_ERROR", validation_error or "Validation failed.", 400, validated)
-
-	db = None
-	try:
-		db = get_session()
-		
-		# Check if email already exists
-		existing_user = db.query(Profile).filter(Profile.email == validated["email"]).first()
-		if existing_user:
-			return failure(
-				"EMAIL_ALREADY_EXISTS",
-				"This email is already registered.",
-				409
-			)
-		
-		# Hash password
-		hashed_password = hash_password(validated["password"])
-		
-		# Create new user profile
-		new_user = Profile(
-			email=validated["email"],
-			password_hash=hashed_password,
-			display_name=validated["display_name"],
-			role="fan",  # Default role
-			is_active=True
-		)
-		
-		db.add(new_user)
-		db.commit()
-		db.refresh(new_user)
-		
-		# Generate tokens
-		access_token = create_access_token(new_user.id)
-		refresh_token = create_refresh_token(new_user.id)
-		
-		user_data = {
-			"user_id": str(new_user.id),
-			"email": new_user.email,
-			"display_name": new_user.display_name,
-			"role": new_user.role,
-			"access_token": access_token,
-			"refresh_token": refresh_token,
-			"token_type": "Bearer",
-			"expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60  # In seconds
-		}
-		
-		return success(user_data, 201)
-		
-	except Exception as e:
-		return failure(
-			"SIGNUP_ERROR",
-			f"Failed to create user: {str(e)}",
-			500
-		)
-	finally:
-		if db:
-			db.close()
-
-
-@auth_bp.post("/login")
+@auth_bp.route("/login", methods=["POST"])
 def login():
-	"""
-	User login endpoint - validates email/password and returns JWT tokens.
-	
-	Request body:
-	{
-		"email": "user@example.com",
-		"password": "securepassword123"
-	}
-	
-	Response:
-	{
-		"ok": true,
-		"data": {
-			"user_id": "uuid",
-			"email": "user@example.com",
-			"display_name": "John Doe",
-			"role": "fan",
-			"access_token": "jwt_token",
-			"refresh_token": "jwt_token",
-			"token_type": "Bearer"
-		}
-	}
-	"""
-	payload = request.get_json(silent=True)
-	validation_error, validated = validate_login_payload(payload)
-	
-	if validation_error or validated is None:
-		return failure("VALIDATION_ERROR", validation_error or "Validation failed.", 400, validated)
-	
-	db = None
-	try:
-		db = get_session()
-		
-		user = db.query(Profile).filter(Profile.email == validated["email"]).first()
-		
-		if not user:
-			return failure("INVALID_CREDENTIALS", "Invalid email or password.", 401)
-		
-		if not user.is_active:
-			return failure("ACCOUNT_INACTIVE", "This account has been deactivated.", 403)
-		
-		# Verify password
-		if not user.password_hash or not verify_password(validated["password"], user.password_hash):
-			return failure("INVALID_CREDENTIALS", "Invalid email or password.", 401)
-		
-		# Generate tokens
-		access_token = create_access_token(user.id)
-		refresh_token = create_refresh_token(user.id)
-		
-		user_data = {
-			"user_id": str(user.id),
-			"email": user.email,
-			"display_name": user.display_name,
-			"role": user.role,
-			"access_token": access_token,
-			"refresh_token": refresh_token,
-			"token_type": "Bearer",
-			"expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60  # In seconds
-		}
-		
-		return success(user_data, 200)
-		
-	except Exception as e:
-		return failure("LOGIN_ERROR", f"Login failed: {str(e)}", 500)
-	finally:
-		if db:
-			db.close()
+    """
+    Login with email and password.
+    
+    Request body:
+        {
+            "email": "user@example.com",
+            "password": "SecurePass123"
+        }
+    
+    Response: 200 OK
+        {
+            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "user": {
+                "id": "uuid",
+                "email": "user@example.com",
+                "display_name": "John Doe",
+                "role": "fan",
+                "is_active": true
+            }
+        }
+    
+    Sets httpOnly cookie with access_token.
+    """
+    db = get_db()
+    try:
+        # 1. Validate request
+        json_data = request.get_json() or {}
+        login_data = LoginCreate(**json_data)
+        
+        # 2. Find user by email
+        profile = db.query(models.Profile).filter(
+            models.Profile.email == login_data.email
+        ).first()
+        
+        if not profile:
+            return jsonify({
+                "error": "Invalid credentials",
+                "code": "INVALID_CREDENTIALS"
+            }), 401
+        
+        # 3. Verify password
+        if not pwd_context.verify(login_data.password, profile.password_hash):
+            return jsonify({
+                "error": "Invalid credentials",
+                "code": "INVALID_CREDENTIALS"
+            }), 401
+        
+        # 4. Check if profile is active
+        if not profile.is_active:
+            return jsonify({
+                "error": "Account is not active",
+                "code": "ACCOUNT_INACTIVE"
+            }), 403
+        
+        # 5. Generate token (expires in ~30 mins by default)
+        token_data = {
+            "sub": str(profile.id),
+            "email": profile.email,
+            "role": profile.role,
+        }
+        access_token = create_access_token(token_data)
+        
+        # 6. Prepare response (following TokenOut schema)
+        from core.auth import EXPIRY_MINUTE
+        response_data = {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": EXPIRY_MINUTE * 60,  # Convert minutes to seconds
+            "user": ProfileOut.model_validate(profile).model_dump()
+        }
+        
+        # 7. Create response with httpOnly cookie
+        response = make_response(jsonify(response_data), 200)
+        response.set_cookie(
+            key="access_token",
+            value=f"Bearer {access_token}",
+            httponly=True,
+            secure=False,  # MUST be True in production (HTTPS)
+            samesite="Lax",
+            max_age=EXPIRY_MINUTE * 60
+        )
+        
+        return response
+        
+    except ValidationError as err:
+        return jsonify({
+            "error": "Validation error",
+            "details": err.errors()
+        }), 422
+    except Exception as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        db.close()
 
 
-@auth_bp.post("/refresh")
-def refresh():
-	"""
-	Refresh access token using a valid refresh token.
-	
-	Request body:
-	{
-		"refresh_token": "refresh_jwt_token"
-	}
-	
-	Response:
-	{
-		"ok": true,
-		"data": {
-			"access_token": "new_jwt_token",
-			"token_type": "Bearer",
-			"expires_in": 1800
-		}
-	}
-	"""
-	payload = request.get_json(silent=True)
-	
-	if not isinstance(payload, dict) or not payload.get("refresh_token"):
-		return failure("MISSING_TOKEN", "Refresh token is required.", 400)
-	
-	refresh_token = payload.get("refresh_token")
-	
-	valid, token_payload, error = verify_token(refresh_token)
-	if not valid or token_payload.get('type') != 'refresh':
-		return failure("INVALID_TOKEN", error or "Invalid refresh token", 401)
-	
-	try:
-		user_id = UUID(token_payload.get('sub'))
-		new_access_token = create_access_token(user_id)
-		
-		data = {
-			"access_token": new_access_token,
-			"token_type": "Bearer",
-			"expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
-		}
-		
-		return success(data, 200)
-		
-	except Exception as e:
-		return failure("TOKEN_ERROR", f"Failed to refresh token: {str(e)}", 500)
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGOUT
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-@auth_bp.post("/logout")
-@token_required
+@auth_bp.route("/logout", methods=["POST"])
+@require_auth
 def logout():
-	"""
-	Logout endpoint - invalidates the current session.
-	In a real app, you'd add the token to a blacklist.
-	
-	Response:
-	{
-		"ok": true,
-		"data": {
-			"message": "Successfully logged out"
-		}
-	}
-	"""
-	return success({"message": "Successfully logged out"}, 200)
+    """
+    Logout the current user.
+    Clears the httpOnly access_token cookie.
+    
+    Response: 200 OK
+        {"message": "Logged out successfully"}
+    """
+    response = make_response(jsonify({"message": "Logged out successfully"}), 200)
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        httponly=True,
+        samesite="Lax"
+    )
+    return response
 
 
-@auth_bp.get("/me")
-@token_required
+# ─────────────────────────────────────────────────────────────────────────────
+# PASSWORD RESET REQUEST
+# ─────────────────────────────────────────────────────────────────────────────
+
+@auth_bp.route("/password-reset", methods=["POST"])
+def password_reset_request():
+    """
+    Request password reset email.
+    
+    Request body:
+        {
+            "email": "user@example.com"
+        }
+    
+    Response: 200 OK
+        {"message": "Password reset email sent"}
+    
+    Note: This is a placeholder. Real implementation should:
+      • Generate a token
+      • Store reset token in DB with expiry
+      • Send email with reset link
+    """
+    db = get_db()
+    try:
+        json_data = request.get_json() or {}
+        reset_req = PasswordResetRequest(**json_data)
+        
+        # Check if profile exists
+        profile = db.query(models.Profile).filter(
+            models.Profile.email == reset_req.email
+        ).first()
+        
+        if not profile:
+            # For security, don't reveal if email exists
+            return jsonify({"message": "Password reset email sent"}), 200
+        
+        # TODO: Generate reset token and send email
+        # For now, just return success
+        
+        return jsonify({"message": "Password reset email sent"}), 200
+        
+    except ValidationError as err:
+        return jsonify({
+            "error": "Validation error",
+            "details": err.errors()
+        }), 422
+    except Exception as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PASSWORD RESET CONFIRM
+# ─────────────────────────────────────────────────────────────────────────────
+
+@auth_bp.route("/password-reset/confirm", methods=["POST"])
+def password_reset_confirm():
+    """
+    Confirm password reset with token.
+    
+    Request body:
+        {
+            "token": "reset_token_from_email",
+            "new_password": "NewSecurePass123"
+        }
+    
+    Response: 200 OK
+        {"message": "Password reset successfully"}
+    
+    Note: This is a placeholder. Real implementation should:
+      • Validate the reset token
+      • Check token expiry
+      • Update password_hash
+    """
+    db = get_db()
+    try:
+        json_data = request.get_json() or {}
+        reset_confirm = PasswordResetConfirm(**json_data)
+        
+        # TODO: Validate reset token from DB
+        # For now, return success
+        
+        return jsonify({"message": "Password reset successfully"}), 200
+        
+    except ValidationError as err:
+        return jsonify({
+            "error": "Validation error",
+            "details": err.errors()
+        }), 422
+    except Exception as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET CURRENT USER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@auth_bp.route("/me", methods=["GET"])
+@require_auth
 def get_current_user():
-	"""
-	Get current authenticated user's profile.
-	
-	Response:
-	{
-		"ok": true,
-		"data": {
-			"user_id": "uuid",
-			"email": "user@example.com",
-			"display_name": "John Doe",
-			"role": "fan",
-			"is_active": true
-		}
-	}
-	"""
-	db = None
-	try:
-		db = get_session()
-		user = db.query(Profile).filter(Profile.id == request.user_id).first()
-		
-		if not user:
-			return failure("USER_NOT_FOUND", "User profile not found", 404)
-		
-		user_data = {
-			"user_id": str(user.id),
-			"email": user.email,
-			"display_name": user.display_name,
-			"role": user.role,
-			"is_active": user.is_active,
-			"created_at": user.created_at.isoformat() if user.created_at else None
-		}
-		
-		return success(user_data, 200)
-		
-	except Exception as e:
-		return failure("PROFILE_ERROR", f"Failed to fetch profile: {str(e)}", 500)
-	finally:
-		if db:
-			db.close()
+    """
+    Get current authenticated user profile.
+    
+    Response: 200 OK
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "display_name": "John Doe",
+            "role": "fan",
+            "team_managed": null,
+            "is_active": true,
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z"
+        }
+    """
+    db = get_db()
+    try:
+        # Get user_id from JWT payload (stored in g.user by @require_auth)
+        user_id = g.user.get("sub")
+        
+        # Fetch profile from DB
+        profile = db.query(models.Profile).filter(
+            models.Profile.id == user_id
+        ).first()
+        
+        if not profile:
+            return jsonify({
+                "error": "User not found",
+                "code": "USER_NOT_FOUND"
+            }), 404
+        
+        return jsonify(ProfileOut.model_validate(profile).model_dump()), 200
+        
+    except Exception as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        db.close()
 
 
-@auth_bp.put("/me")
-@token_required
+# ─────────────────────────────────────────────────────────────────────────────
+# UPDATE CURRENT USER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@auth_bp.route("/me", methods=["PUT"])
+@require_auth
 def update_current_user():
-	"""
-	Update current user's profile.
-	
-	Request body:
-	{
-		"display_name": "New Name",
-		"role": "team_manager"  (admin only)
-	}
-	
-	Response:
-	{
-		"ok": true,
-		"data": {
-			"user_id": "uuid",
-			"email": "user@example.com",
-			"display_name": "New Name",
-			"role": "team_manager"
-		}
-	}
-	"""
-	payload = request.get_json(silent=True)
-	
-	if not isinstance(payload, dict):
-		return failure("INVALID_REQUEST", "Body must be a JSON object.", 400)
-	
-	db = None
-	try:
-		db = get_session()
-		user = db.query(Profile).filter(Profile.id == request.user_id).first()
-		
-		if not user:
-			return failure("USER_NOT_FOUND", "User profile not found", 404)
-		
-		# Update display_name if provided
-		if "display_name" in payload:
-			new_name = str(payload.get("display_name", "")).strip()
-			if new_name and 2 <= len(new_name) <= 50:
-				user.display_name = new_name
-		
-		# Only admins can change role
-		if "role" in payload:
-			if user.role != 'admin':
-				return failure("FORBIDDEN", "Only admins can change roles", 403)
-			new_role = str(payload.get("role", "")).strip()
-			if new_role in ('admin', 'team_manager', 'fan'):
-				user.role = new_role
-		
-		user.updated_at = datetime.utcnow()
-		db.commit()
-		db.refresh(user)
-		
-		user_data = {
-			"user_id": str(user.id),
-			"email": user.email,
-			"display_name": user.display_name,
-			"role": user.role
-		}
-		
-		return success(user_data, 200)
-		
-	except Exception as e:
-		return failure("UPDATE_ERROR", f"Failed to update profile: {str(e)}", 500)
-	finally:
-		if db:
-			db.close()
+    """
+    Update current user profile.
+    
+    Request body (all optional):
+        {
+            "display_name": "New Name"
+        }
+    
+    Response: 200 OK
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "display_name": "New Name",
+            "role": "fan",
+            "team_managed": null,
+            "is_active": true
+        }
+    """
+    db = get_db()
+    try:
+        # Get user_id from JWT
+        user_id = g.user.get("sub")
+        
+        # Fetch profile
+        profile = db.query(models.Profile).filter(
+            models.Profile.id == user_id
+        ).first()
+        
+        if not profile:
+            return jsonify({
+                "error": "User not found",
+                "code": "USER_NOT_FOUND"
+            }), 404
+        
+        # Validate update data
+        json_data = request.get_json() or {}
+        update_data = ProfileUpdate(**json_data)
+        
+        # Apply updates
+        if update_data.display_name is not None:
+            profile.display_name = update_data.display_name
+        
+        profile.updated_at = datetime.now(tz=timezone.utc)
+        
+        db.commit()
+        db.refresh(profile)
+        
+        return jsonify(ProfileOut.model_validate(profile).model_dump()), 200
+        
+    except ValidationError as err:
+        db.rollback()
+        return jsonify({
+            "error": "Validation error",
+            "details": err.errors()
+        }), 422
+    except Exception as err:
+        db.rollback()
+        return jsonify({"error": str(err)}), 500
+    finally:
+        db.close()

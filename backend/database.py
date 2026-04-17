@@ -4,7 +4,7 @@ from typing import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, scoped_session
 from model.model import Base
 
 # Database connection config (kept directly in code per project preference)
@@ -33,20 +33,13 @@ SessionLocal = sessionmaker(
 )
 
 
-def get_db() -> Generator[Session, None, None]:
-	"""Get a database session for dependency injection."""
-	db = SessionLocal()
-	try:
-		yield db
-	finally:
-		db.close()
+#db_session = scoped_session(SessionLocal)
 
 
 def init_db():
-	"""Initialize the database by creating all tables."""
-	Base.metadata.create_all(bind=engine)
-
+    """Initialize the database by creating all tables."""
+    Base.metadata.create_all(bind=engine)
 
 def get_session() -> Session:
-	"""Get a new database session."""
-	return SessionLocal()
+    """Get a raw, new database session (useful for background tasks/scripts)."""
+    return SessionLocal()
