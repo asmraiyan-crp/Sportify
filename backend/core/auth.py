@@ -2,18 +2,20 @@ import os
 import logging
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-
+from uuid import uuid4
 from flask import request, jsonify, g
 from jose import jwt, JWTError, ExpiredSignatureError
 from dotenv import load_dotenv 
+
 
 logger = logging.getLogger(__name__)
 load_dotenv()
 
 EXPIRY_MINUTE = int(os.getenv("EXPIRY_MINUTE", 30))
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")  # ← fallback added
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 
+print(f"SECRET_KEY loaded: {SECRET_KEY}")
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     
@@ -26,13 +28,28 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     # 2. Add standard claims
     to_encode.update({
         "exp": expire,
-        "iat": datetime.now(timezone.utc)
+        "iat": datetime.now(timezone.utc),
+        "jti": str(uuid4()),  
         # Removed 'jti' since Redis blacklist is no longer used
     })
     
     # 3. Sign and Encode
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+
+def _is_blacklisted(jti: str) -> bool:
+    from database import SessionLocal
+    from model.model import TokenBlacklist
+
+    db = SessionLocal()
+    try:
+        return db.query(TokenBlacklist).filter(
+            TokenBlacklist.jti == jti
+        ).first() is not None
+    finally:
+        db.close()
 
 
 def require_auth(f):
@@ -53,6 +70,9 @@ def require_auth(f):
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             
+            jti = payload.get("jti")
+            if jti and _is_blacklisted(jti):
+              return jsonify({"detail": "Token has been revoked"}), 401
             # Store the user payload in Flask's global context 'g'
             # This makes the user data available to the route function
             g.user = payload
