@@ -11,8 +11,15 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 EXPIRY_MINUTE = int(os.getenv("EXPIRY_MINUTE", 30))
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+
+# Validate that SECRET_KEY is set
+if not SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY or JWT_SECRET_KEY environment variable is not set. "
+        "Set one in your .env file: JWT_SECRET_KEY=your-secret-key"
+    )
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()

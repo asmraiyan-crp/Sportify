@@ -1,6 +1,7 @@
 import os
 
 from flask import Flask
+from flask_cors import CORS
 from api.v1.admin import admin_bp
 from api.v1.auth import auth_bp
 from api.v1.testapi import test_bp
@@ -8,6 +9,17 @@ from api.v1.testapi import test_bp
 
 def create_app() -> Flask:
 	app = Flask(__name__)
+
+	# Enable CORS for frontend requests
+	CORS(app, 
+		resources={r"/api/*": {
+			"origins": ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"],
+			"methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+			"allow_headers": ["Content-Type", "Authorization"],
+			"supports_credentials": True,
+			"max_age": 3600
+		}}
+	)
 
 	# Register blueprints
 	app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
