@@ -48,6 +48,9 @@ def get_db():
     """Get database session."""
     return SessionLocal()
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTER
@@ -106,19 +109,23 @@ def register():
         )
         
         db.add(new_profile)
+        logger.info(f"[REGISTER] Adding new profile: {user_data.email}")
         db.commit()
+        logger.info(f"[REGISTER] Committed to DB, profile ID: {new_profile.id}")
         db.refresh(new_profile)
         
         # 5. Return profile as per ProfileOut schema
         return jsonify(ProfileOut.model_validate(new_profile).model_dump()), 201
         
     except ValidationError as err:
+        logger.error(f"[REGISTER] Validation error: {err.errors()}")
         db.rollback()
         return jsonify({
             "error": "Validation error",
             "details": err.errors()
         }), 422
     except Exception as err:
+        logger.error(f"[REGISTER] Exception during registration: {err}", exc_info=True)
         db.rollback()
         return jsonify({"error": str(err)}), 500
     finally:
