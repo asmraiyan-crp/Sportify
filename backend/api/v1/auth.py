@@ -239,16 +239,40 @@ def login():
 # LOGOUT
 # ─────────────────────────────────────────────────────────────────────────────
 
+# api/v1/auth.py  — replace the existing logout() function
+
 @auth_bp.route("/logout", methods=["POST"])
 @require_auth
 def logout():
     """
     Logout the current user.
-    Clears the httpOnly access_token cookie.
-    
-    Response: 200 OK
-        {"message": "Logged out successfully"}
+    • Clears the httpOnly cookie
+    • Blacklists the JWT so Authorization-header usage also stops working
     """
+    from database import SessionLocal
+    from model.model import TokenBlacklist
+
+    db = SessionLocal()
+    try:
+        jti        = g.user.get("jti")
+        exp_ts     = g.user.get("exp")          # Unix timestamp from JWT
+
+        if jti and exp_ts:
+            expires_at = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
+
+            # Only insert if not already blacklisted
+            if not db.query(TokenBlacklist).filter(
+                TokenBlacklist.jti == jti
+            ).first():
+                db.add(TokenBlacklist(jti=jti, expires_at=expires_at))
+                db.commit()
+
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[LOGOUT] Failed to blacklist token: {e}")
+    finally:
+        db.close()
+
     response = make_response(jsonify({"message": "Logged out successfully"}), 200)
     response.delete_cookie(
         key="access_token",
