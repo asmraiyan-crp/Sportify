@@ -1,5 +1,6 @@
 import os
 from api.v1.leagues import leagues_bp
+from api.v1.matches import matches_bp
 from flask import Flask
 from flask_cors import CORS
 from api.v1.admin import admin_bp
@@ -26,6 +27,7 @@ def create_app() -> Flask:
 	app.register_blueprint(admin_bp, url_prefix="/api/v1/admin")
 	app.register_blueprint(test_bp, url_prefix="/api/v1/test")
 	app.register_blueprint(leagues_bp, url_prefix="/api/v1/leagues")
+	app.register_blueprint(matches_bp, url_prefix="/api/v1/matches")
 
 	# Initialize database (create tables if they don't exist)
 	try:
