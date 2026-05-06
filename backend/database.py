@@ -22,7 +22,11 @@ DATABASE_URL = URL.create(
 engine = create_engine(
 	DATABASE_URL,
 	echo=False,
-	future=True
+	future=True,
+	pool_size=20,
+	max_overflow=40,
+	pool_pre_ping=True,
+	pool_recycle=3600,
 )
 
 # Create session factory

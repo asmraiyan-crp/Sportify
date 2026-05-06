@@ -64,8 +64,7 @@ from functools import wraps
 
 # ─── Blueprint ────────────────────────────────────────────────────────────────
 
-# leagues_bp = Blueprint("leagues", __name__)
-leagues_bp = Blueprint("leagues", __name__, url_prefix="/leagues")
+leagues_bp = Blueprint("leagues", __name__)
 
 
 # ─── Auth decorator stubs (replace with real implementations) ─────────────────
@@ -106,7 +105,7 @@ def get_db():
 # PUBLIC ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
-@leagues_bp.route("/leagues", methods=["GET"])
+@leagues_bp.route("", methods=["GET"])
 def list_leagues():
     """
     GET /api/v1/leagues
@@ -159,7 +158,7 @@ def list_leagues():
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-@leagues_bp.route("/leagues/<int:league_id>", methods=["GET"])
+@leagues_bp.route("/<int:league_id>", methods=["GET"])
 def get_league(league_id: int):
     """
     GET /api/v1/leagues/<id>
@@ -186,7 +185,7 @@ def get_league(league_id: int):
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-@leagues_bp.route("/leagues/<int:league_id>/standings", methods=["GET"])
+@leagues_bp.route("/<int:league_id>/standings", methods=["GET"])
 def get_standings(league_id: int):
     """
     GET /api/v1/leagues/<id>/standings
