@@ -1,13 +1,11 @@
+import { useNavigate } from "react-router-dom";
 import { LANDING_STATS, LANDING_FEATURES, HERO_GRADIENTS } from "../data";
-
-interface LandingPageProps {
-  onGetStarted: () => void;
-}
 
 interface LandingStat    { value: string; label: string }
 interface LandingFeature { icon: string; title: string; desc: string }
 
-export function LandingPage({ onGetStarted }: LandingPageProps) {
+export function LandingPage() {
+  const navigate = useNavigate();
   return (
     <div className="min-h-screen bg-base text-t1 font-body overflow-x-hidden">
 
@@ -44,7 +42,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
 
             <div className="flex gap-3 flex-wrap">
               <button
-                onClick={onGetStarted}
+                onClick={() => navigate("/login")}
                 className="flex items-center gap-2 px-7 py-3.5 rounded-btn text-base font-bold bg-accent text-white border-none cursor-pointer font-heading tracking-wide transition-all duration-200 hover:bg-accent-light hover:shadow-accent-glow hover:-translate-y-0.5 active:translate-y-0"
               >
                 Get Started Free →
@@ -142,7 +140,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
           Join thousands of fans already tracking live scores, following teams, and building their sports community.
         </p>
         <button
-          onClick={onGetStarted}
+          onClick={() => navigate("/login")}
           className="inline-flex items-center gap-3 px-9 py-4 rounded-btn text-lg font-bold bg-accent text-white border-none cursor-pointer font-heading tracking-wide transition-all duration-200 hover:bg-accent-light hover:shadow-accent-glow hover:-translate-y-0.5"
         >
           ⚡ Join Sportify Free

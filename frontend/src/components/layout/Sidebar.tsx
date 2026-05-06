@@ -1,22 +1,35 @@
+import { useNavigate } from "react-router-dom";
 import { SIDEBAR_NAV, PL_STANDINGS } from "../../data";
 import { DividerLabel } from "../shared";
 import { StandingsTable } from "../standings/StandingsTable";
-import type { Page } from "../../types";
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
-const NAV_TO_PAGE: Record<string, Page> = {
-  Home: "home", Football: "matches", Cricket: "matches",
-  Wrestling: "matches", Players: "players", Schedule: "matches",
-  Events: "events", Trophies: "standings", Analytics: "standings",
+const NAV_TO_ROUTE: Record<string, string> = {
+  Home: "/home", 
+  Football: "/matches", 
+  Cricket: "/matches",
+  Wrestling: "/matches", 
+  Players: "/players", 
+  Schedule: "/matches",
+  Events: "/events", 
+  Trophies: "/standings", 
+  Analytics: "/standings",
 };
 
 interface SidebarProps {
-  activePage: Page;
-  onNav:      (page: Page) => void;
+  activePage: string;
+  onNav:      (_page: string) => void;
 }
 
-export function Sidebar({ activePage, onNav }: SidebarProps) {
+export function Sidebar({ activePage: _activePage, onNav: _onNav }: SidebarProps) {
+  const navigate = useNavigate();
+
+  const handleNav = (label: string) => {
+    const route = NAV_TO_ROUTE[label] ?? "/home";
+    navigate(route);
+  };
+
   return (
     <aside className="hidden lg:flex flex-col w-[268px] shrink-0 bg-card border-l border-border px-4 py-6 overflow-y-auto">
 
@@ -24,14 +37,14 @@ export function Sidebar({ activePage, onNav }: SidebarProps) {
         <DividerLabel label="Quick Nav" />
         <nav className="flex flex-col gap-0.5">
           {SIDEBAR_NAV.map(([icon, label]) => {
-            const target = NAV_TO_PAGE[label] ?? "home";
-            const active = activePage === target && label !== "Cricket" && label !== "Wrestling";
+            const route = NAV_TO_ROUTE[label] ?? "/home";
+            const isActive = window.location.pathname === route && label !== "Cricket" && label !== "Wrestling";
             return (
               <button
                 key={label}
-                onClick={() => onNav(target)}
+                onClick={() => handleNav(label)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-[13.5px] font-medium transition-all duration-150 w-full text-left border-none
-                  ${active ? "bg-accent/[0.13] text-accent-light" : "text-t2 bg-transparent hover:bg-hover hover:text-t1"}`}
+                  ${isActive ? "bg-accent/[0.13] text-accent-light" : "text-t2 bg-transparent hover:bg-hover hover:text-t1"}`}
               >
                 <span className="text-base w-5 text-center shrink-0">{icon}</span>
                 {label}
