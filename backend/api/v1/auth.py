@@ -48,6 +48,9 @@ def get_db():
     """Get database session."""
     return SessionLocal()
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTER
@@ -106,19 +109,23 @@ def register():
         )
         
         db.add(new_profile)
+        logger.info(f"[REGISTER] Adding new profile: {user_data.email}")
         db.commit()
+        logger.info(f"[REGISTER] Committed to DB, profile ID: {new_profile.id}")
         db.refresh(new_profile)
         
         # 5. Return profile as per ProfileOut schema
         return jsonify(ProfileOut.model_validate(new_profile).model_dump()), 201
         
     except ValidationError as err:
+        logger.error(f"[REGISTER] Validation error: {err.errors()}")
         db.rollback()
         return jsonify({
             "error": "Validation error",
             "details": err.errors()
         }), 422
     except Exception as err:
+        logger.error(f"[REGISTER] Exception during registration: {err}", exc_info=True)
         db.rollback()
         return jsonify({"error": str(err)}), 500
     finally:
@@ -232,16 +239,40 @@ def login():
 # LOGOUT
 # ─────────────────────────────────────────────────────────────────────────────
 
+# api/v1/auth.py  — replace the existing logout() function
+
 @auth_bp.route("/logout", methods=["POST"])
 @require_auth
 def logout():
     """
     Logout the current user.
-    Clears the httpOnly access_token cookie.
-    
-    Response: 200 OK
-        {"message": "Logged out successfully"}
+    • Clears the httpOnly cookie
+    • Blacklists the JWT so Authorization-header usage also stops working
     """
+    from database import SessionLocal
+    from model.model import TokenBlacklist
+
+    db = SessionLocal()
+    try:
+        jti        = g.user.get("jti")
+        exp_ts     = g.user.get("exp")          # Unix timestamp from JWT
+
+        if jti and exp_ts:
+            expires_at = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
+
+            # Only insert if not already blacklisted
+            if not db.query(TokenBlacklist).filter(
+                TokenBlacklist.jti == jti
+            ).first():
+                db.add(TokenBlacklist(jti=jti, expires_at=expires_at))
+                db.commit()
+
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[LOGOUT] Failed to blacklist token: {e}")
+    finally:
+        db.close()
+
     response = make_response(jsonify({"message": "Logged out successfully"}), 200)
     response.delete_cookie(
         key="access_token",

@@ -1,13 +1,31 @@
 import os
 from api.v1.leagues import leagues_bp
+from api.v1.matches import matches_bp
+from api.v1.comments import comments_bp
+from api.v1.sync import sync_bp
 from flask import Flask
+from flask_cors import CORS
 from api.v1.admin import admin_bp
 from api.v1.auth import auth_bp
 from api.v1.testapi import test_bp
 from api.v1.follow import me_bp, follow_bp
+from api.v1.teams import teams_bp 
+from api.v1.players import players_bp 
+from api.v1.events import events_bp
 
 def create_app() -> Flask:
 	app = Flask(__name__)
+
+	# Enable CORS for frontend requests
+	CORS(app, 
+		resources={r"/api/*": {
+			"origins": ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"],
+			"methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+			"allow_headers": ["Content-Type", "Authorization"],
+			"supports_credentials": True,
+			"max_age": 3600
+		}}
+	)
 
 	# Register blueprints
 	app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
@@ -16,6 +34,12 @@ def create_app() -> Flask:
 	app.register_blueprint(leagues_bp, url_prefix="/api/v1/leagues")
 	app.register_blueprint(me_bp,     url_prefix="/api/v1/users")
 	app.register_blueprint(follow_bp, url_prefix="/api/v1/follow")
+	app.register_blueprint(teams_bp,   url_prefix="/api/v1") 
+	app.register_blueprint(players_bp, url_prefix="/api/v1")
+	app.register_blueprint(events_bp, url_prefix="/api/v1")
+	app.register_blueprint(matches_bp, url_prefix="/api/v1/matches")
+	app.register_blueprint(comments_bp, url_prefix="/api/v1/comments")
+	app.register_blueprint(sync_bp, url_prefix="/api/v1/admin")
 	# Initialize database (create tables if they don't exist)
 	try:
 		from database import init_db

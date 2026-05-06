@@ -11,6 +11,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy import Column, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
 
@@ -331,3 +333,11 @@ class SyncLog(Base):
 	records_upserted = Column(Integer, default=0)
 	status = Column(String, default='running')
 	error_message = Column(Text)
+
+	
+class TokenBlacklist(Base):
+    __tablename__ = "token_blacklist"
+
+    jti       = Column(String, primary_key=True)   # JWT ID (unique per token)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    
