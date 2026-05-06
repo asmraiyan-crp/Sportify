@@ -8,6 +8,7 @@ from flask_cors import CORS
 from api.v1.admin import admin_bp
 from api.v1.auth import auth_bp
 from api.v1.testapi import test_bp
+from api.v1.follow import me_bp, follow_bp
 from api.v1.teams import teams_bp 
 from api.v1.players import players_bp 
 from api.v1.events import events_bp
@@ -31,13 +32,14 @@ def create_app() -> Flask:
 	app.register_blueprint(admin_bp, url_prefix="/api/v1/admin")
 	app.register_blueprint(test_bp, url_prefix="/api/v1/test")
 	app.register_blueprint(leagues_bp, url_prefix="/api/v1/leagues")
+	app.register_blueprint(me_bp,     url_prefix="/api/v1/users")
+	app.register_blueprint(follow_bp, url_prefix="/api/v1/follow")
 	app.register_blueprint(teams_bp,   url_prefix="/api/v1") 
 	app.register_blueprint(players_bp, url_prefix="/api/v1")
 	app.register_blueprint(events_bp, url_prefix="/api/v1")
 	app.register_blueprint(matches_bp, url_prefix="/api/v1/matches")
 	app.register_blueprint(comments_bp, url_prefix="/api/v1/comments")
 	app.register_blueprint(sync_bp, url_prefix="/api/v1/admin")
-
 	# Initialize database (create tables if they don't exist)
 	try:
 		from database import init_db
