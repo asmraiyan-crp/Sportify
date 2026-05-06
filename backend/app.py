@@ -12,6 +12,7 @@ from api.v1.follow import me_bp, follow_bp
 from api.v1.teams import teams_bp 
 from api.v1.players import players_bp 
 from api.v1.events import events_bp
+from api.v1.sports import sports_bp, admin_sports_bp 
 
 def create_app() -> Flask:
 	app = Flask(__name__)
@@ -28,6 +29,7 @@ def create_app() -> Flask:
 	)
 
 	# Register blueprints
+	app.register_blueprint(admin_sports_bp,  url_prefix="/api/v1/admin")
 	app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
 	app.register_blueprint(admin_bp, url_prefix="/api/v1/admin")
 	app.register_blueprint(test_bp, url_prefix="/api/v1/test")
@@ -40,6 +42,8 @@ def create_app() -> Flask:
 	app.register_blueprint(matches_bp, url_prefix="/api/v1/matches")
 	app.register_blueprint(comments_bp, url_prefix="/api/v1/comments")
 	app.register_blueprint(sync_bp, url_prefix="/api/v1/admin")
+	app.register_blueprint(sports_bp,url_prefix="/api/v1")        
+
 	# Initialize database (create tables if they don't exist)
 	try:
 		from database import init_db
