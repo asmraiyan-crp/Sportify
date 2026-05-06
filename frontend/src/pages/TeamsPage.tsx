@@ -17,7 +17,12 @@ export function TeamsPage() {
     const fetchTeams = async () => {
       try {
         setLoading(true);
-        const res = await getTeams({ limit: 100 });
+        // Fetch teams filtered by sport via API
+        const params: any = { limit: 100 };
+        if (sport !== "All") {
+          params.sport_name = sport;
+        }
+        const res = await getTeams(params);
         setTeams(res.data);
       } catch (err: any) {
         console.error("Error fetching teams:", err);
@@ -28,7 +33,7 @@ export function TeamsPage() {
     };
 
     fetchTeams();
-  }, []);
+  }, [sport]);
 
   useEffect(() => {
     let filtered = teams;
@@ -37,13 +42,8 @@ export function TeamsPage() {
       filtered = filtered.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
     }
 
-    if (sport !== "All") {
-      // Filter by sport if needed
-      // For now, just show all teams regardless of sport selection
-    }
-
     setFilteredTeams(filtered);
-  }, [teams, search, sport]);
+  }, [teams, search]);
 
   if (loading) {
     return (

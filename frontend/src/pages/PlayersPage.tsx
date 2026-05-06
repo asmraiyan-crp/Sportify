@@ -6,6 +6,7 @@ import { getPlayers } from "../services/playerService";
 
 export function PlayersPage() {
   const [sport, setSport] = useState<string>("All");
+  const [search, setSearch] = useState<string>("");
   const [players, setPlayers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
@@ -14,23 +15,29 @@ export function PlayersPage() {
     const fetchPlayers = async () => {
       try {
         setLoading(true);
-        const res = await getPlayers({ limit: 100 });
+        // Fetch players filtered by sport via API
+        const params: any = { limit: 100 };
+        if (sport !== "All") {
+          params.sport_name = sport;
+        }
+        const res = await getPlayers(params);
         const transformedPlayers = res.data.map((p: any) => {
           const injuryMap: { [key: string]: any } = {
             "fit": "fit",
             "injured": "injured",
             "doubtful": "doubtful",
           };
+          const sportIcon = p.sport?.name === "Cricket" ? "🏏" : "⚽";
           return {
             id: p.id || p.player_id,
             name: p.name,
             team: p.team?.name || "Unknown",
             teamId: p.team_id,
-            sport: "Football" as const,
+            sport: p.sport?.name || "Football",
             position: p.position_role || p.position || "Unknown",
             rating: 4.5,
             injuryStatus: (injuryMap[p.injury_status] || "fit") as any,
-            img: "⚽",
+            img: sportIcon,
             stats: {
               goals: 0,
               assists: 0,
@@ -48,7 +55,7 @@ export function PlayersPage() {
     };
 
     fetchPlayers();
-  }, []);
+  }, [sport]);
 
   if (loading) {
     return (
@@ -70,16 +77,22 @@ export function PlayersPage() {
     );
   }
 
-  const filtered = sport === "All"
-    ? players
-    : players.filter(() => {
-        // This would filter by sport if the API response includes sport data
-        return true;
-      });
+  const filtered = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <>
       <SectionHeader title="Top Players" />
+      
+      <div className="mb-6">
+        <input
+          type="text"
+          placeholder="Search players by name..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full px-4 py-2.5 bg-card border border-border rounded-lg text-[13px] font-body text-t1 placeholder:text-t3 focus:outline-none focus:border-accent transition-colors"
+        />
+      </div>
+
       <FilterTabs
         options={SPORT_FILTERS}
         active={sport}
@@ -91,7 +104,7 @@ export function PlayersPage() {
           {filtered.map((p: any) => <PlayerCard key={p.id} player={p} showFollow />)}
         </div>
       ) : (
-        <EmptyState message="No players found for this sport." />
+        <EmptyState message={search ? "No players found matching your search." : "No players found for this sport."} />
       )}
     </>
   );

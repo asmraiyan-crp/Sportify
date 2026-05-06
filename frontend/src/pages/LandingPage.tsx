@@ -36,7 +36,7 @@ export function LandingPage() {
             </h1>
 
             <p className="text-[17px] text-white/60 leading-relaxed mb-10 font-body max-w-md">
-              Football, Cricket, Wrestling — live scores, deep statistics, standings, and a fan community.
+              Football, Cricket — live scores, deep statistics, standings, and a fan community.
               One platform. Real data. Zero lag.
             </p>
 
@@ -105,14 +105,14 @@ export function LandingPage() {
         <div className="max-w-6xl mx-auto px-8">
           <div className="text-center mb-14">
             <h2 className="font-display text-[48px] text-white leading-none mb-3">THREE SPORTS. ONE HOME.</h2>
-            <p className="text-t3 font-body text-[15px]">Deep coverage across Football, Cricket, and Wrestling.</p>
+            <p className="text-t3 font-body text-[15px]">Deep coverage across Football and Cricket.</p>
           </div>
 
           <div className="grid md:grid-cols-3 gap-5">
             {[
               { sport: "Football",  icon: "⚽", bg: HERO_GRADIENTS["football-pl"],    stat: "8,400+ matches",  tagline: "Premier League, UCL, La Liga & more" },
               { sport: "Cricket",   icon: "🏏", bg: HERO_GRADIENTS["cricket-ipl"],    stat: "2,100+ matches",  tagline: "IPL, BBL, international T20 & ODI"   },
-              { sport: "Wrestling", icon: "🥊", bg: HERO_GRADIENTS["wrestling-wwe"],  stat: "1,800+ events",   tagline: "WWE Raw, SmackDown, WrestleMania"     },
+
             ].map(s => (
               <div
                 key={s.sport}

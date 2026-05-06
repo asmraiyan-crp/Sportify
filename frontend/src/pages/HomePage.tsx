@@ -10,6 +10,7 @@ import { SectionHeader, FilterTabs, EmptyState } from "../components/shared";
 import { getLiveMatches, getMatches } from "../services/matchService";
 import { getPlayers } from "../services/playerService";
 import { getLeagueStandings } from "../services/leagueService";
+import { transformMatches } from "../utils/matchTransform";
 
 export function HomePage() {
   const [liveMatches, setLiveMatches] = useState<any[]>([]);
@@ -29,11 +30,11 @@ export function HomePage() {
         setLoading(true);
         // Fetch live matches
         const liveRes = await getLiveMatches();
-        setLiveMatches(liveRes);
+        setLiveMatches(transformMatches(liveRes));
 
         // Fetch upcoming matches
         const upcomingRes = await getMatches({ status: "scheduled", limit: 5 });
-        setUpcomingMatches(upcomingRes.data);
+        setUpcomingMatches(transformMatches(upcomingRes.data));
 
         // Fetch top players
         const playersRes = await getPlayers({ limit: 6 });

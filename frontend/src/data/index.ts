@@ -5,19 +5,17 @@ import type {
 
 // ─── Sport metadata ───────────────────────────────────────────────────────────
 
-export const SPORT_FILTERS: SportFilter[] = ["All", "Football", "Cricket", "Wrestling"];
+export const SPORT_FILTERS: SportFilter[] = ["All", "Football", "Cricket"];
 
 export const SPORT_ICON: Record<string, string> = {
   Football:  "⚽",
   Cricket:   "🏏",
-  Wrestling: "🥊",
   All:       "🌐",
 };
 
 export const SPORT_COLOR: Record<string, string> = {
   Football:  "#3ecf8e",
   Cricket:   "#f59e0b",
-  Wrestling: "#ef4444",
 };
 
 // ─── Hero gradient map (runtime — can't be JIT Tailwind) ──────────────────────
@@ -26,7 +24,6 @@ export const HERO_GRADIENTS: Record<string, string> = {
   "football-pl":   "linear-gradient(135deg,#1a0a2e 0%,#2d1060 50%,#0f0a1e 100%)",
   "football-ucl":  "linear-gradient(135deg,#0a1628 0%,#1e3a5f 50%,#0a0f1e 100%)",
   "cricket-ipl":   "linear-gradient(135deg,#1a0e00 0%,#4d2e00 50%,#1a0a00 100%)",
-  "wrestling-wwe": "linear-gradient(135deg,#1e0a0a 0%,#4d1010 50%,#150505 100%)",
   "football-laliga":"linear-gradient(135deg,#001a0a 0%,#003d20 50%,#001008 100%)",
 };
 
@@ -51,10 +48,10 @@ export const HERO_SLIDES: HeroSlide[] = [
     bgKey: "cricket-ipl", score: "187 – 162/7", time: "18.4 ov",
   },
   {
-    id: 4, tag: "WATCH", sport: "Wrestling",
-    title: "WrestleMania 41 Highlights",
-    league: "WWE · Main Event Recap",
-    bgKey: "wrestling-wwe", score: null, time: "3h 47m",
+    id: 4, tag: "LIVE", sport: "Football",
+    title: "Bayern Munich vs PSG",
+    league: "Champions League · Quarter Final",
+    bgKey: "football-ucl", score: "0 – 0", time: "30'",
   },
 ];
 
@@ -68,8 +65,7 @@ const MAN_CITY:     Team = { id: 5,  name: "Man City",    badge: "⚽", sport: "
 const LIVERPOOL:    Team = { id: 6,  name: "Liverpool",   badge: "⚽", sport: "Football", country: "England" };
 const MI:           Team = { id: 7,  name: "MI",          badge: "🏏", sport: "Cricket",  country: "India"   };
 const CSK:          Team = { id: 8,  name: "CSK",         badge: "🏏", sport: "Cricket",  country: "India"   };
-const CODY_RHODES:  Team = { id: 9,  name: "Cody Rhodes", badge: "🥊", sport: "Wrestling",country: "USA"     };
-const SETH_ROLLINS: Team = { id: 10, name: "Seth Rollins",badge: "🥊", sport: "Wrestling",country: "USA"     };
+
 const RCB:          Team = { id: 11, name: "RCB",         badge: "🏏", sport: "Cricket",  country: "India"   };
 const KKR:          Team = { id: 12, name: "KKR",         badge: "🏏", sport: "Cricket",  country: "India"   };
 const BAYERN:       Team = { id: 13, name: "Bayern",      badge: "⚽", sport: "Football", country: "Germany" };
@@ -81,7 +77,6 @@ export const LIVE_MATCHES: Match[] = [
   { id: 1,  sport: "Football",  league: "Premier League", leagueId: 1, home: ARSENAL,     away: CHELSEA,      homeScore: 2,   awayScore: 1,       elapsed: "67'",     status: "live"      },
   { id: 2,  sport: "Cricket",   league: "IPL 2025",       leagueId: 4, home: MI,          away: CSK,          homeScore: 187, awayScore: "162/7", elapsed: "18.4 ov", status: "live"      },
   { id: 3,  sport: "Football",  league: "La Liga",        leagueId: 2, home: REAL_MADRID, away: BARCELONA,    homeScore: 1,   awayScore: 1,       elapsed: "45'",     status: "live"      },
-  { id: 4,  sport: "Wrestling", league: "WWE Raw",        leagueId: 5, home: CODY_RHODES, away: SETH_ROLLINS, homeScore: null,awayScore: null,    elapsed: null,      status: "soon"      },
 ];
 
 export const UPCOMING_MATCHES: Match[] = [
@@ -108,7 +103,7 @@ export const TOP_PLAYERS: Player[] = [
   { id:2, name:"Erling Haaland", team:"Man City",       teamId:5, sport:"Football",  position:"Striker",    rating:9.4, injuryStatus:"fit",      img:"⚡", stats:{ goals:27, assists:5,  matches:25 } },
   { id:3, name:"Rohit Sharma",   team:"Mumbai Indians", teamId:7, sport:"Cricket",   position:"Batsman",    rating:8.8, injuryStatus:"fit",      img:"🏏", stats:{ runs:1024, matches:14 } },
   { id:4, name:"Virat Kohli",    team:"RCB",            teamId:11,sport:"Cricket",   position:"Batsman",    rating:9.2, injuryStatus:"fit",      img:"🏆", stats:{ runs:892, matches:13 } },
-  { id:5, name:"Cody Rhodes",    team:"WWE",            teamId:9, sport:"Wrestling", position:"Wrestler",   rating:8.9, injuryStatus:"fit",      img:"💪", stats:{ matches:22 } },
+
   { id:6, name:"Pedri",          team:"Barcelona",      teamId:4, sport:"Football",  position:"Midfielder", rating:8.7, injuryStatus:"doubtful", img:"🎯", stats:{ goals:9, assists:11, matches:24 } },
 ];
 
@@ -117,7 +112,7 @@ export const TOP_PLAYERS: Player[] = [
 export const FAN_EVENTS: FanEvent[] = [
   { id:1, title:"UCL Semi-Final Watch Party",      description:"Live screening with commentary, giveaways & food.",       eventDate:"2025-04-09T19:00:00Z", location:"Dhaka Sports Hub",   capacity:200, registered:143, sport:"Football"  },
   { id:2, title:"Cricket Analytics Workshop",      description:"Data-driven IPL 2025 breakdown with senior analysts.",    eventDate:"2025-04-15T15:00:00Z", location:"Online (Zoom)",      capacity:100, registered:67,  sport:"Cricket"   },
-  { id:3, title:"WWE WrestleMania Viewing Night",  description:"Watch the main event live with fellow wrestling fans.",   eventDate:"2025-04-06T22:00:00Z", location:"The Ring Bar, Dhaka", capacity:80,  registered:72,  sport:"Wrestling" },
+
 ];
 
 // ─── Mock Auth User ───────────────────────────────────────────────────────────
@@ -141,7 +136,7 @@ export type  NavLink = (typeof NAV_LINKS)[number];
 
 export const SIDEBAR_NAV: [string, string][] = [
   ["🏠","Home"], ["⚽","Football"], ["🏏","Cricket"],
-  ["🥊","Wrestling"], ["📊","Analytics"], ["🎯","Players"],
+  ["📊","Analytics"], ["🎯","Players"],
   ["🏆","Trophies"], ["📅","Schedule"], ["🎪","Events"],
 ];
 
@@ -149,16 +144,16 @@ export const SIDEBAR_NAV: [string, string][] = [
 
 export const LANDING_STATS = [
   { value: "12K+",  label: "Live Matches Tracked" },
-  { value: "3",     label: "Sports Covered"       },
+  { value: "2",     label: "Sports Covered"       },
   { value: "50K+",  label: "Fans Registered"      },
   { value: "60s",   label: "Score Refresh Rate"   },
 ];
 
 export const LANDING_FEATURES = [
-  { icon: "⚡", title: "Real-Time Scores",     desc: "Live scores pushed every 60 seconds directly from official APIs. Never miss a goal, wicket, or pin."   },
+  { icon: "⚡", title: "Real-Time Scores",     desc: "Live scores pushed every 60 seconds directly from official APIs. Never miss a goal, wicket, or boundary."   },
   { icon: "📊", title: "Deep Statistics",      desc: "Per-player stats, match history, season aggregates, and standings updated automatically after every match." },
   { icon: "👥", title: "Fan Community",        desc: "Rate matches, post reviews, follow your favourite teams and players, join fan events."                     },
-  { icon: "🏆", title: "Multi-Sport",          desc: "Football, Cricket, and Wrestling under one roof. One account, three sports, zero friction."                },
+  { icon: "🏆", title: "Multi-Sport",          desc: "Football and Cricket under one roof. One account, two sports, zero friction."                },
   { icon: "🔔", title: "Smart Notifications",  desc: "Get notified the instant a team you follow goes live. Never accidentally miss kickoff again."              },
   { icon: "🛡", title: "Role-Based Access",    desc: "Team Managers update squads and injury status. Admins moderate content. Fans explore everything."          },
 ];

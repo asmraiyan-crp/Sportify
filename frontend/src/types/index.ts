@@ -1,6 +1,6 @@
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
-export type Sport        = "Football" | "Cricket" | "Wrestling";
+export type Sport        = "Football" | "Cricket";
 export type SportFilter  = "All" | Sport;
 export type MatchStatus  = "live" | "soon" | "finished" | "scheduled";
 export type HeroTag      = "LIVE" | "TRENDING" | "WATCH";

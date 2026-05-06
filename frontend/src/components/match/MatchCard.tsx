@@ -9,6 +9,10 @@ interface MatchCardProps {
 }
 
 export function MatchCard({ match: m, onClick }: MatchCardProps) {
+  if (!m || !m.home || !m.away) {
+    return null; // Prevent crash if data is malformed
+  }
+
   return (
     <article
       role="button"
@@ -67,6 +71,10 @@ function TeamBlock({ name, badge }: { name: string; badge: string }) {
 // ─── Upcoming Row ─────────────────────────────────────────────────────────────
 
 export function UpcomingRow({ match: m }: { match: Match }) {
+  if (!m || !m.home || !m.away) {
+    return null; // Prevent crash if data is malformed
+  }
+
   return (
     <div className="flex items-center gap-4 bg-card border border-border rounded-lg px-[18px] py-3.5 cursor-pointer transition-all duration-200 hover:border-border2 hover:bg-hover">
       <div className="w-9 h-9 rounded-lg bg-card2 flex items-center justify-center text-base shrink-0">

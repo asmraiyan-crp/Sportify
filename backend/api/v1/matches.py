@@ -11,6 +11,7 @@ Public endpoints:
     GET  /matches/live               – all live matches
     GET  /matches/<id>               – full match detail
     GET  /matches/<id>/highlights    – highlight videos for match
+    GET  /matches/<id>/player-stats  – player performance stats for match
     GET  /matches/<id>/reviews       – reviews + AVG(rating)
 
 Authenticated endpoints:
@@ -28,7 +29,7 @@ from datetime import date, datetime, timezone
 
 from flask import Blueprint, g, jsonify, request
 from pydantic import ValidationError
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload
 
 from core.auth import require_auth, require_role
@@ -170,21 +171,31 @@ def list_matches():
 def list_live_matches():
     """
     All matches with status='live', joined with home/away team names.
+    Uses raw SQL query for explicit control over the joins.
 
     Response 200:
-        { "data": [MatchOut, …], "total": <int> }
+        { "data": [match_row, …], "total": <int> }
     """
     db = get_db()
     try:
-        matches = (
-            db.query(GameMatch)
-            .options(*_MATCH_LOAD)
-            .filter(GameMatch.status == "live")
-            .order_by(GameMatch.match_datetime.desc())
-            .all()
-        )
-
-        data = [MatchOut.model_validate(m).model_dump(mode="json") for m in matches]
+        query = text("""
+            SELECT
+                m.match_id, m.status, m.home_score, m.away_score,
+                m.elapsed_time, m.match_datetime, m.venue,
+                ht.name AS home_team_name, ht.logo_url AS home_logo,
+                at.name AS away_team_name, at.logo_url AS away_logo,
+                l.name AS league_name, l.season
+            FROM game_match m
+            JOIN team ht ON ht.team_id = m.home_team_id
+            JOIN team at ON at.team_id = m.away_team_id
+            JOIN league l ON l.league_id = m.league_id
+            WHERE m.status = 'live'
+            ORDER BY m.match_datetime DESC
+        """)
+        
+        results = db.execute(query).fetchall()
+        data = [dict(row._mapping) for row in results]
+        
         return jsonify({"data": data, "total": len(data)}), 200
 
     finally:
@@ -253,6 +264,48 @@ def get_match_highlights(match_id: int):
 
         data = [HighlightOut.model_validate(h).model_dump(mode="json") for h in highlights]
         return jsonify({"data": data}), 200
+
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/v1/matches/<id>/player-stats
+# ══════════════════════════════════════════════════════════════════════════════
+
+@matches_bp.route("/<int:match_id>/player-stats", methods=["GET"])
+def get_match_player_stats(match_id: int):
+    """
+    All player stats for a match, sorted by goals descending.
+
+    Response 200:
+        { "data": [player_stat_row, …], "total": <int> }
+    Response 404: ErrorOut  (match not found)
+    """
+    db = get_db()
+    try:
+        match = db.query(GameMatch).filter(GameMatch.match_id == match_id).first()
+        if match is None:
+            return jsonify(
+                ErrorOut(error=f"Match {match_id} not found", code="NOT_FOUND").model_dump()
+            ), 404
+
+        query = text("""
+            SELECT
+                p.name, p.position_role, p.profile_image_url,
+                pms.goals, pms.assists, pms.minutes_played,
+                pms.yellow_cards, pms.red_cards
+            FROM player_match_stat pms
+            JOIN player     p ON p.player_id = pms.player_id
+            JOIN game_match m ON m.match_id  = pms.match_id
+            WHERE pms.match_id = :match_id
+            ORDER BY pms.goals DESC
+        """)
+
+        results = db.execute(query, {"match_id": match_id}).fetchall()
+        data = [dict(row._mapping) for row in results]
+
+        return jsonify({"data": data, "total": len(data)}), 200
 
     finally:
         db.close()

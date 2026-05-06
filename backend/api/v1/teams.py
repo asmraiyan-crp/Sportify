@@ -81,11 +81,19 @@ def list_teams():
         except (ValueError, TypeError):
             return jsonify(ErrorOut(error="Invalid query parameter", code="BAD_QUERY").model_dump()), 400
 
-        # ── build query ───────────────────────────────────────────────────────
-        q = db.query(Team).options(joinedload(Team.sport))
+        sport_name = request.args.get("sport_name", "").strip()
 
+        # ── build query ───────────────────────────────────────────────────────
+        q = db.query(Team).options(joinedload(Team.sport)).join(Team.sport)  # Properly join via relationship
+
+        # Exclude wrestling
+        q = q.filter(Sport.name != "Wrestling")
+
+        # Filter by sport_id or sport_name
         if sport_id:
             q = q.filter(Team.sport_id == sport_id)
+        elif sport_name:
+            q = q.filter(Sport.name == sport_name)
 
         if league_id:
             # Filter via the team_league junction table

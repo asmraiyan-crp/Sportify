@@ -39,7 +39,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request, g
 from pydantic import ValidationError
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, text
 from sqlalchemy.orm import joinedload
 from database import SessionLocal
 # ── local imports (adjust paths to match your project layout) ─────────────────
@@ -217,82 +217,62 @@ def get_standings(league_id: int):
     if league is None:
         return jsonify(ErrorOut(error=f"League {league_id} not found", code="NOT_FOUND").model_dump()), 404
 
-    # ── fetch all finished matches in this league ─────────────────────────────
-    matches = (
-        db.query(GameMatch)
-        .options(
-            joinedload(GameMatch.home_team),
-            joinedload(GameMatch.away_team),
-        )
-        .filter(
-            GameMatch.league_id == league_id,
-            GameMatch.status    == "finished",
-        )
-        .all()
-    )
-
-    # ── aggregate stats per team ──────────────────────────────────────────────
-    stats: dict[int, dict[str, Any]] = defaultdict(lambda: {
-        "team_id": None, "team_name": "", "logo_url": None,
-        "played": 0, "won": 0, "drawn": 0, "lost": 0,
-        "gf": 0, "ga": 0,
-    })
-
-    def _ensure(team):
-        s = stats[team.team_id]
-        s["team_id"]   = team.team_id
-        s["team_name"] = team.name
-        s["logo_url"]  = team.logo_url
-
-    for m in matches:
-        ht, at = m.home_team, m.away_team
-        hs, as_ = (m.home_score or 0), (m.away_score or 0)
-
-        _ensure(ht); _ensure(at)
-
-        stats[ht.team_id]["played"] += 1
-        stats[at.team_id]["played"] += 1
-        stats[ht.team_id]["gf"]     += hs
-        stats[ht.team_id]["ga"]     += as_
-        stats[at.team_id]["gf"]     += as_
-        stats[at.team_id]["ga"]     += hs
-
-        if hs > as_:                          # home win
-            stats[ht.team_id]["won"]  += 1
-            stats[at.team_id]["lost"] += 1
-        elif hs < as_:                         # away win
-            stats[at.team_id]["won"]  += 1
-            stats[ht.team_id]["lost"] += 1
-        else:                                  # draw
-            stats[ht.team_id]["drawn"] += 1
-            stats[at.team_id]["drawn"] += 1
-
-    # ── sort: pts desc → gd desc → gf desc → name asc ────────────────────────
-    def _pts(s):  return s["won"] * 3 + s["drawn"]
-    def _gd(s):   return s["gf"] - s["ga"]
-
-    rows_sorted = sorted(
-        stats.values(),
-        key=lambda s: (-_pts(s), -_gd(s), -s["gf"], s["team_name"]),
-    )
+    # ── fetch standings using raw SQL ───────────────────────────────────────
+    query = text("""
+        SELECT
+            t.team_id, t.name, t.logo_url,
+            COUNT(m.match_id) AS played,
+            COUNT(CASE
+                WHEN (m.home_team_id = t.team_id AND m.home_score > m.away_score)
+                  OR (m.away_team_id = t.team_id AND m.away_score > m.home_score)
+                THEN 1 END) AS won,
+            COUNT(CASE
+                WHEN m.home_score = m.away_score THEN 1 END) AS drawn,
+            COUNT(CASE
+                WHEN (m.home_team_id = t.team_id AND m.home_score < m.away_score)
+                  OR (m.away_team_id = t.team_id AND m.away_score < m.home_score)
+                THEN 1 END) AS lost,
+            SUM(CASE WHEN m.home_team_id = t.team_id THEN m.home_score
+                     WHEN m.away_team_id = t.team_id THEN m.away_score END) AS gf,
+            SUM(CASE WHEN m.home_team_id = t.team_id THEN m.away_score
+                     WHEN m.away_team_id = t.team_id THEN m.home_score END) AS ga,
+            (COUNT(CASE WHEN (m.home_team_id=t.team_id AND m.home_score>m.away_score)
+                          OR (m.away_team_id=t.team_id AND m.away_score>m.home_score)
+                        THEN 1 END) * 3
+           + COUNT(CASE WHEN m.home_score = m.away_score THEN 1 END)) AS pts
+        FROM team t
+        JOIN team_league tl ON tl.team_id   = t.team_id
+        JOIN game_match  m  ON (m.home_team_id = t.team_id OR m.away_team_id = t.team_id)
+                           AND m.league_id = tl.league_id
+                           AND m.status    = 'finished'
+        WHERE tl.league_id = :league_id
+        GROUP BY t.team_id, t.name, t.logo_url
+        ORDER BY pts DESC, 
+                 (SUM(CASE WHEN m.home_team_id = t.team_id THEN m.home_score
+                           WHEN m.away_team_id = t.team_id THEN m.away_score END) -
+                  SUM(CASE WHEN m.home_team_id = t.team_id THEN m.away_score
+                           WHEN m.away_team_id = t.team_id THEN m.home_score END)) DESC
+    """)
+    
+    results = db.execute(query, {"league_id": league_id}).fetchall()
 
     # ── build StandingRow objects ─────────────────────────────────────────────
     standing_rows = [
         StandingRow(
-            pos      = pos + 1,
-            team_id  = s["team_id"],
-            team_name= s["team_name"],
-            logo_url = s["logo_url"],
-            played   = s["played"],
-            won      = s["won"],
-            drawn    = s["drawn"],
-            lost     = s["lost"],
-            gf       = s["gf"],
-            ga       = s["ga"],
-            gd       = _gd(s),
-            pts      = _pts(s),
+            pos       = pos + 1,
+            team_id   = row.team_id,
+            team_name = row.name,
+            logo_url  = row.logo_url,
+            played    = row.played,
+            won       = row.won,
+            drawn     = row.drawn,
+            lost      = row.lost,
+            gf        = row.gf or 0,
+            ga        = row.ga or 0,
+            gd        = (row.gf or 0) - (row.ga or 0),
+            pts       = row.pts or 0,
         )
-        for pos, s in enumerate(rows_sorted)
+        for pos, row in enumerate(results)
     ]
 
     response = StandingsOut(

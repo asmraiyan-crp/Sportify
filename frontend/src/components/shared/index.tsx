@@ -57,6 +57,10 @@ export function InjuryBadge({ status }: { status: InjuryStatus }) {
 const FORM_COLOR: Record<FormResult, string> = { W:"bg-win", D:"bg-soon", L:"bg-live" };
 
 export function FormDots({ form }: { form: FormResult[] }) {
+  if (!form || !Array.isArray(form)) {
+    return <div className="flex items-center gap-0.5" />; // Empty div if form is missing
+  }
+
   return (
     <div className="flex items-center gap-0.5">
       {form.map((f, i) => (

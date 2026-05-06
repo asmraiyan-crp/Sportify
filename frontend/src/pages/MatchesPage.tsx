@@ -5,6 +5,7 @@ import { useMatchFilter, useModal } from "../hooks";
 import { MatchCard, UpcomingRow, MatchModal } from "../components/match/MatchCard";
 import { SectionHeader, FilterTabs, EmptyState } from "../components/shared";
 import { getLiveMatches, getMatches } from "../services/matchService";
+import { transformMatches } from "../utils/matchTransform";
 
 export function MatchesPage() {
   const [liveMatches, setLiveMatches] = useState<any[]>([]);
@@ -23,15 +24,15 @@ export function MatchesPage() {
         setLoading(true);
         // Fetch live matches
         const liveRes = await getLiveMatches();
-        setLiveMatches(liveRes);
+        setLiveMatches(transformMatches(liveRes));
 
         // Fetch scheduled matches
         const scheduledRes = await getMatches({ status: "scheduled" });
-        setScheduledMatches(scheduledRes.data);
+        setScheduledMatches(transformMatches(scheduledRes.data));
 
         // Fetch finished matches
         const finishedRes = await getMatches({ status: "finished" });
-        setFinishedMatches(finishedRes.data);
+        setFinishedMatches(transformMatches(finishedRes.data));
       } catch (err: any) {
         console.error("Error fetching matches:", err);
         setError(err.message || "Failed to load matches");

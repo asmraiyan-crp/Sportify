@@ -9,7 +9,6 @@ const NAV_TO_ROUTE: Record<string, string> = {
   Home: "/home", 
   Football: "/matches", 
   Cricket: "/matches",
-  Wrestling: "/matches", 
   Players: "/players", 
   Schedule: "/matches",
   Events: "/events", 
@@ -38,7 +37,7 @@ export function Sidebar({ activePage: _activePage, onNav: _onNav }: SidebarProps
         <nav className="flex flex-col gap-0.5">
           {SIDEBAR_NAV.map(([icon, label]) => {
             const route = NAV_TO_ROUTE[label] ?? "/home";
-            const isActive = window.location.pathname === route && label !== "Cricket" && label !== "Wrestling";
+            const isActive = window.location.pathname === route && label !== "Cricket";
             return (
               <button
                 key={label}
