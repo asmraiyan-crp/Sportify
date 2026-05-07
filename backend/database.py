@@ -18,15 +18,24 @@ DATABASE_URL = URL.create(
 	database="postgres",
 )
 
-# Create engine
+# Create engine with SSL options for Supabase
 engine = create_engine(
 	DATABASE_URL,
 	echo=False,
 	future=True,
-	pool_size=20,
-	max_overflow=40,
+	pool_size=5,
+	max_overflow=10,
 	pool_pre_ping=True,
-	pool_recycle=3600,
+	pool_recycle=300,  # Recycle connections every 5 minutes
+	pool_use_lifo=True,
+	connect_args={
+		"sslmode": "require",
+		"connect_timeout": 10,
+		"keepalives": 1,
+		"keepalives_idle": 30,
+		"keepalives_interval": 10,
+		"keepalives_count": 5,
+	},
 )
 
 # Create session factory

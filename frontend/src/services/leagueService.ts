@@ -3,7 +3,8 @@ import axios from "axios";
 const API_BASE = "http://localhost:5000/api/v1";
 
 export interface League {
-  id: number;
+  id?: number;
+  league_id?: number;
   name: string;
   sport_id?: number;
   season?: string;

@@ -65,9 +65,10 @@ export function MatchesPage() {
   }
 
   const filteredLive = filtered.filter((m: Match) => m.status === "live");
-  const filteredScheduled = scheduledMatches.filter((m: any) =>
-    sport === "All" || m.league?.sport?.name === sport
-  );
+  const filteredScheduled = scheduledMatches.filter((m: any) => {
+    if (sport === "All") return true;
+    return m.league === sport || m.league_name === sport;
+  });
 
   return (
     <>

@@ -3,6 +3,29 @@ import { StandingsTable } from "../components/standings/StandingsTable";
 import { SectionHeader, EmptyState } from "../components/shared";
 import { getLeagues, getLeagueStandings } from "../services/leagueService";
 import type { League } from "../services/leagueService";
+import type { Standing } from "../types";
+
+// Helper to get league ID from League object
+function getLeagueId(league: League): number {
+  return league.league_id || league.id || 0;
+}
+
+// Transform API response to component Standing format
+function transformStanding(s: any): Standing {
+  return {
+    pos: s.pos,
+    team: s.team_name || "Unknown",
+    badge: s.league_name?.includes("IPL") || s.league_name?.includes("Big Bash") || s.league_name?.includes("Premier") ? "🏏" : "⚽",
+    played: s.played,
+    won: s.won,
+    drawn: s.drawn,
+    lost: s.lost,
+    gf: s.gf,
+    ga: s.ga,
+    pts: s.pts,
+    form: [], // Generate form based on recent matches if available
+  };
+}
 
 export function StandingsPage() {
   const [leagues, setLeagues] = useState<League[]>([]);
@@ -35,9 +58,11 @@ export function StandingsPage() {
     if (activeLeague) {
       const fetchStandings = async () => {
         try {
-          const leagueId = (activeLeague as any).league_id || activeLeague.id;
+          const leagueId = getLeagueId(activeLeague);
           const res = await getLeagueStandings(leagueId);
-          setStandings(res.data);
+          // Transform API response to component format
+          const transformed = (res.data || []).map(transformStanding);
+          setStandings(transformed);
         } catch (err: any) {
           console.error("Error fetching standings:", err);
           setStandings([]);
@@ -75,10 +100,10 @@ export function StandingsPage() {
       <div className="flex gap-1.5 mb-6 flex-wrap">
         {leagues.map((l: League) => (
           <button
-            key={l.id}
+            key={getLeagueId(l)}
             onClick={() => setActiveLeague(l)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-medium cursor-pointer font-body transition-all duration-200
-              ${activeLeague?.id === l.id
+              ${getLeagueId(activeLeague!) === getLeagueId(l)
                 ? "bg-accent/20 border border-accent/50 text-accent-light"
                 : "bg-card border border-border text-t2 hover:border-border2 hover:text-t1"}`}
           >
