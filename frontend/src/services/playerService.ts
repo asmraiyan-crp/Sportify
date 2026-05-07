@@ -36,6 +36,26 @@ export async function getPlayers(params?: {
   }
 }
 
+export async function searchPlayers(params?: {
+  first_name?: string;
+  last_name?: string;
+  sport_id?: number;
+  team_id?: number;
+  limit?: number;
+  page?: number;
+}): Promise<{ data: Player[]; meta?: any }> {
+  try {
+    const response = await axios.get(`${API_BASE}/players/search`, { params });
+    return {
+      data: response.data.data || response.data,
+      meta: response.data.meta,
+    };
+  } catch (error: any) {
+    console.error("Error searching players:", error.message);
+    throw error;
+  }
+}
+
 export async function getPlayerDetail(id: string): Promise<Player> {
   try {
     const response = await axios.get(`${API_BASE}/players/${id}`);

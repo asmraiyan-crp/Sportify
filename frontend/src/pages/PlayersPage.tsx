@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { SPORT_FILTERS } from "../data";
 import { PlayerCard } from "../components/player/PlayerCard";
 import { SectionHeader, FilterTabs, EmptyState } from "../components/shared";
-import { getPlayers } from "../services/playerService";
+import { getPlayers, searchPlayers } from "../services/playerService";
 
 export function PlayersPage() {
   const [sport, setSport] = useState<string>("All");
@@ -11,11 +11,11 @@ export function PlayersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
 
+  // Fetch players based on sport filter
   useEffect(() => {
     const fetchPlayers = async () => {
       try {
         setLoading(true);
-        // Fetch players filtered by sport via API
         const params: any = { limit: 100 };
         if (sport !== "All") {
           params.sport_name = sport;
@@ -57,6 +57,68 @@ export function PlayersPage() {
     fetchPlayers();
   }, [sport]);
 
+  // Handle search query - debounced API call
+  useEffect(() => {
+    if (!search.trim()) {
+      return; // If search is empty, rely on the sport filter results above
+    }
+
+    const debounceTimer = setTimeout(async () => {
+      try {
+        setLoading(true);
+        // Parse search input to extract first name and last name
+        const searchParts = search.trim().split(/\s+/);
+        const params: any = { limit: 100 };
+        
+        if (searchParts.length >= 2) {
+          params.first_name = searchParts[0];
+          params.last_name = searchParts.slice(1).join(" ");
+        } else {
+          params.first_name = searchParts[0];
+        }
+
+        if (sport !== "All") {
+          params.sport_name = sport;
+        }
+
+        const res = await searchPlayers(params);
+        const transformedPlayers = res.data.map((p: any) => {
+          const injuryMap: { [key: string]: any } = {
+            "fit": "fit",
+            "injured": "injured",
+            "doubtful": "doubtful",
+          };
+          const sportIcon = p.sport?.name === "Cricket" ? "🏏" : "⚽";
+          return {
+            id: p.id || p.player_id,
+            name: p.name,
+            team: p.team?.name || "Unknown",
+            teamId: p.team_id,
+            sport: p.sport?.name || "Football",
+            position: p.position_role || p.position || "Unknown",
+            rating: 4.5,
+            injuryStatus: (injuryMap[p.injury_status] || "fit") as any,
+            img: sportIcon,
+            stats: {
+              goals: 0,
+              assists: 0,
+              matches: 0,
+            }
+          };
+        });
+        setPlayers(transformedPlayers);
+        setError(""); // Clear any previous errors
+      } catch (err: any) {
+        console.error("Error searching players:", err);
+        setError(err.message || "Failed to search players");
+      } finally {
+        setLoading(false);
+      }
+    }, 500); // 500ms debounce
+
+    return () => clearTimeout(debounceTimer); // Cleanup previous timer
+  }, [search, sport]);
+
   if (loading) {
     return (
       <div className="text-center py-16">
@@ -77,7 +139,7 @@ export function PlayersPage() {
     );
   }
 
-  const filtered = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = players;
 
   return (
     <>
@@ -86,7 +148,7 @@ export function PlayersPage() {
       <div className="mb-6">
         <input
           type="text"
-          placeholder="Search players by name..."
+          placeholder="Search players by name (e.g., 'Bukayo Saka' or 'Bukayo')..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full px-4 py-2.5 bg-card border border-border rounded-lg text-[13px] font-body text-t1 placeholder:text-t3 focus:outline-none focus:border-accent transition-colors"

@@ -93,7 +93,7 @@ def list_players():
         q = db.query(Player).options(
             joinedload(Player.team),
             joinedload(Player.sport),
-        ).join(Player.sport)  # Properly join via relationship
+        ).join(Player.sport)  
 
         # Exclude wrestling
         q = q.filter(Sport.name != "Wrestling")
@@ -108,6 +108,108 @@ def list_players():
             q = q.filter(Player.team_id == team_id)
         if name_q:
             q = q.filter(Player.name.ilike(f"%{name_q}%"))
+
+        total   = q.count()
+        players = q.order_by(Player.name).offset((page - 1) * limit).limit(limit).all()
+
+        # ── serialise ─────────────────────────────────────────────────────────
+        data = [PlayerOut.model_validate(p).model_dump(mode="json") for p in players]
+
+        total_pages = max(1, (total + limit - 1) // limit)
+        meta = PaginationMeta(
+            page=page, limit=limit, total=total,
+            total_pages=total_pages,
+            has_next=page < total_pages,
+            has_prev=page > 1,
+        ).model_dump()
+
+        return jsonify({"data": data, "meta": meta}), 200
+
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+@players_bp.route("/players/search", methods=["GET"])
+def search_players():
+    """
+    GET /api/v1/players/search
+    ───────────────────────────
+    Search players by first name and/or last name.
+
+    Query parameters:
+        ?first_name=<str>     – filter by first name (case-insensitive partial match)
+        ?last_name=<str>      – filter by last name (case-insensitive partial match)
+        ?sport_id=<int>       – optional: filter by sport
+        ?team_id=<int>        – optional: filter by team
+        ?page=<int>           – page number (default 1)
+        ?limit=<int>          – results per page (default 20, max 100)
+
+    Example: /players/search?first_name=Bukayo&last_name=Saka
+
+    Response 200:
+        {
+          "data": [ PlayerOut, … ],
+          "meta": PaginationMeta
+        }
+    Response 400: ErrorOut  (validation error)
+    """
+    db = get_db()
+    try:
+        # ── parse query params ────────────────────────────────────────────────
+        try:
+            first_name = request.args.get("first_name", "").strip()
+            last_name  = request.args.get("last_name", "").strip()
+            sport_id   = int(request.args["sport_id"]) if "sport_id" in request.args else None
+            team_id    = int(request.args["team_id"])  if "team_id"  in request.args else None
+            page       = max(1, int(request.args.get("page", 1)))
+            limit      = min(100, max(1, int(request.args.get("limit", 20))))
+        except (ValueError, TypeError):
+            return jsonify(ErrorOut(error="Invalid query parameter", code="BAD_QUERY").model_dump()), 400
+
+        if not first_name and not last_name:
+            return jsonify(
+                ErrorOut(
+                    error="At least one of 'first_name' or 'last_name' must be provided",
+                    code="MISSING_SEARCH_PARAM"
+                ).model_dump()
+            ), 400
+
+        # ── build query ───────────────────────────────────────────────────────
+        q = db.query(Player).options(
+            joinedload(Player.team),
+            joinedload(Player.sport),
+        ).join(Player.sport)
+
+        # Exclude wrestling
+        q = q.filter(Sport.name != "Wrestling")
+
+        # Filter by sport_id if provided
+        if sport_id:
+            q = q.filter(Player.sport_id == sport_id)
+
+        # Filter by team_id if provided
+        if team_id:
+            q = q.filter(Player.team_id == team_id)
+
+        # Filter by first_name and/or last_name
+        if first_name and last_name:
+            # Both provided: match "first_name last_name"
+            q = q.filter(
+                Player.name.ilike(f"{first_name}%") | 
+                Player.name.ilike(f"%{first_name}%") |
+                (Player.name.ilike(f"%{first_name}%") & Player.name.ilike(f"%{last_name}%"))
+            )
+        elif first_name:
+            # Only first_name: match at start or as first word
+            q = q.filter(
+                Player.name.ilike(f"{first_name}%") |
+                Player.name.ilike(f"% {first_name}%")
+            )
+        elif last_name:
+            # Only last_name: match anywhere (as it could be last word)
+            q = q.filter(Player.name.ilike(f"%{last_name}%"))
 
         total   = q.count()
         players = q.order_by(Player.name).offset((page - 1) * limit).limit(limit).all()
