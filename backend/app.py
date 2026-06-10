@@ -52,6 +52,13 @@ def create_app() -> Flask:
 	except Exception as e:
 		print(f"Warning: Could not initialize database: {e}")
 
+	# Start APScheduler for background sync jobs
+	try:
+		from scheduler.scheduler import start_scheduler
+		start_scheduler()
+	except Exception as e:
+		print(f"Warning: Could not start scheduler: {e}")
+
 	return app
 
 

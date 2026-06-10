@@ -369,3 +369,28 @@ def update_team(team_id: int):
 
     finally:
         db.close()
+
+# 🚀 FIXED: Added '/teams' to the route path so it matches the other endpoints
+@teams_bp.route("/teams/<int:team_id>/stats", methods=["GET"])
+def get_team_statistics(team_id: int):
+    from sqlalchemy import text
+    from flask import jsonify
+
+    db = get_db() # 🚀 Matches the pattern used in the rest of teams.py
+    try:
+        # Use SQLAlchemy text() to safely execute your custom PostgreSQL function
+        query = text("SELECT * FROM get_team_stats(:team_id)")
+        result = db.execute(query, {"team_id": team_id}).fetchone()
+        
+        if not result:
+            return jsonify({"error": "Stats not found", "code": "NOT_FOUND"}), 404
+        
+        # Convert the SQLAlchemy row mapping into a standard dictionary for JSON
+        return jsonify({"data": dict(result._mapping)}), 200
+                
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "code": "DB_ERROR"}), 500
+    finally:
+        db.close()

@@ -190,98 +190,53 @@ def get_standings(league_id: int):
     """
     GET /api/v1/leagues/<id>/standings
     ───────────────────────────────────
-    Compute and return the league table from finished game_match rows.
-
-    The calculation follows standard football standings:
-        points  = win×3 + draw×1
-        tiebreak= points → goal_difference → goals_for → name
-
-    If you have a get_standings() PostgreSQL function you can replace the
-    Python computation below with:
-        rows = db.session.execute(
-            text("SELECT * FROM get_standings(:lid)"), {"lid": league_id}
-        ).mappings().all()
+    Compute and return the league table using get_standings() DB function.
 
     Response 200: StandingsOut
     Response 404: ErrorOut
     """
-    db = get_db()
-
-    league = (
-        db.query(League)
-        .options(joinedload(League.sport))
-        .filter(League.league_id == league_id)
-        .first()
-    )
-
-    if league is None:
-        return jsonify(ErrorOut(error=f"League {league_id} not found", code="NOT_FOUND").model_dump()), 404
-
-    # ── fetch standings using raw SQL ───────────────────────────────────────
-    query = text("""
-        SELECT
-            t.team_id, t.name, t.logo_url,
-            COUNT(m.match_id) AS played,
-            COUNT(CASE
-                WHEN (m.home_team_id = t.team_id AND m.home_score > m.away_score)
-                  OR (m.away_team_id = t.team_id AND m.away_score > m.home_score)
-                THEN 1 END) AS won,
-            COUNT(CASE
-                WHEN m.home_score = m.away_score THEN 1 END) AS drawn,
-            COUNT(CASE
-                WHEN (m.home_team_id = t.team_id AND m.home_score < m.away_score)
-                  OR (m.away_team_id = t.team_id AND m.away_score < m.home_score)
-                THEN 1 END) AS lost,
-            SUM(CASE WHEN m.home_team_id = t.team_id THEN m.home_score
-                     WHEN m.away_team_id = t.team_id THEN m.away_score END) AS gf,
-            SUM(CASE WHEN m.home_team_id = t.team_id THEN m.away_score
-                     WHEN m.away_team_id = t.team_id THEN m.home_score END) AS ga,
-            (COUNT(CASE WHEN (m.home_team_id=t.team_id AND m.home_score>m.away_score)
-                          OR (m.away_team_id=t.team_id AND m.away_score>m.home_score)
-                        THEN 1 END) * 3
-           + COUNT(CASE WHEN m.home_score = m.away_score THEN 1 END)) AS pts
-        FROM team t
-        JOIN team_league tl ON tl.team_id   = t.team_id
-        JOIN game_match  m  ON (m.home_team_id = t.team_id OR m.away_team_id = t.team_id)
-                           AND m.league_id = tl.league_id
-                           AND m.status    = 'finished'
-        WHERE tl.league_id = :league_id
-        GROUP BY t.team_id, t.name, t.logo_url
-        ORDER BY pts DESC, 
-                 (SUM(CASE WHEN m.home_team_id = t.team_id THEN m.home_score
-                           WHEN m.away_team_id = t.team_id THEN m.away_score END) -
-                  SUM(CASE WHEN m.home_team_id = t.team_id THEN m.away_score
-                           WHEN m.away_team_id = t.team_id THEN m.home_score END)) DESC
-    """)
+    from psycopg2.extras import RealDictCursor
+    from database import get_db
     
-    results = db.execute(query, {"league_id": league_id}).fetchall()
+    try:
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # Check if league exists
+            cur.execute("SELECT league_id, name FROM league WHERE league_id = %s", (league_id,))
+            league_row = cur.fetchone()
+            
+            if not league_row:
+                return jsonify(ErrorOut(error=f"League {league_id} not found", code="NOT_FOUND").model_dump()), 404
+            
+            # Get standings from DB function
+            cur.execute("""
+                SELECT * FROM get_standings(%s)
+            """, (league_id,))
+            
+            results = cur.fetchall()
+            
+            # Build standing rows
+            standing_rows = [
+                {
+                    "pos": pos + 1,
+                    **dict(row)
+                }
+                for pos, row in enumerate(results)
+            ]
+            
+            response = {
+                "league": dict(league_row),
+                "standings": standing_rows,
+                "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+            }
+            
+            return jsonify(response), 200
 
-    # ── build StandingRow objects ─────────────────────────────────────────────
-    standing_rows = [
-        StandingRow(
-            pos       = pos + 1,
-            team_id   = row.team_id,
-            team_name = row.name,
-            logo_url  = row.logo_url,
-            played    = row.played,
-            won       = row.won,
-            drawn     = row.drawn,
-            lost      = row.lost,
-            gf        = row.gf or 0,
-            ga        = row.ga or 0,
-            gd        = (row.gf or 0) - (row.ga or 0),
-            pts       = row.pts or 0,
-        )
-        for pos, row in enumerate(results)
-    ]
-
-    response = StandingsOut(
-        league     = LeagueNested.model_validate(league),
-        standings  = standing_rows,
-        updated_at = datetime.now(tz=timezone.utc),
-    )
-
-    return jsonify(response.model_dump(mode="json")), 200
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════
