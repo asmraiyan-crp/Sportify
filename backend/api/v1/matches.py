@@ -77,91 +77,92 @@ _MATCH_DETAIL_LOAD = _MATCH_LOAD + [
 # ══════════════════════════════════════════════════════════════════════════════
 
 @matches_bp.route("", methods=["GET"])
-def list_matches():
-    """
-    List matches with optional filters.
+def get_all_matches():
+    from database import get_db
+    from psycopg2.extras import RealDictCursor
+    from flask import request, jsonify
 
-    Query params:
-        ?sport=<str>        filter by sport name (case-insensitive)
-        ?league_id=<int>
-        ?status=<str>       scheduled|live|finished|postponed|cancelled
-        ?date_from=<date>   YYYY-MM-DD
-        ?date_to=<date>     YYYY-MM-DD
-        ?page=<int>         default 1
-        ?limit=<int>        default 20, max 100
-
-    Response 200:
-        { "data": [MatchOut, …], "meta": PaginationMeta }
-    """
-    db = get_db()
     try:
-        try:
-            filters = MatchListFilter(
-                sport=request.args.get("sport"),
-                league_id=request.args.get("league_id"),
-                status=request.args.get("status"),
-                date_from=request.args.get("date_from"),
-                date_to=request.args.get("date_to"),
-                page=request.args.get("page", 1),
-                limit=request.args.get("limit", 20),
-            )
-        except ValidationError as exc:
-            return jsonify(
-                ErrorOut(error="Invalid query parameters", code="BAD_QUERY",
-                         details=exc.errors()).model_dump()
-            ), 400
+        status = request.args.get("status")
+        limit = request.args.get("limit", 20, type=int)
+        team_id = request.args.get("team_id", type=int)
 
-        q = (
-            db.query(GameMatch)
-            .options(*_MATCH_LOAD)
-        )
+        # 🚀 FIXED: We JOIN the view with the raw game_match table to get the IDs
+        query = """
+            SELECT v.*, m.home_team_id, m.away_team_id 
+            FROM v_match_detail v
+            JOIN game_match m ON v.match_id = m.match_id
+            WHERE 1=1
+        """
+        params = []
 
-        if filters.sport:
-            from model.model import League, Sport
-            q = (
-                q.join(GameMatch.league)
-                 .join(League.sport)
-                 .filter(func.lower(Sport.name) == filters.sport.lower())
-            )
+        if status:
+            query += " AND v.status = %s"
+            params.append(status)
 
-        if filters.league_id:
-            q = q.filter(GameMatch.league_id == filters.league_id)
+        if team_id:
+            # Now we can safely filter by the raw IDs!
+            query += " AND (m.home_team_id = %s OR m.away_team_id = %s)"
+            params.extend([team_id, team_id])
 
-        if filters.status:
-            q = q.filter(GameMatch.status == filters.status)
+        query += " ORDER BY v.match_datetime DESC LIMIT %s"
+        params.append(limit)
 
-        if filters.date_from:
-            q = q.filter(
-                func.date(GameMatch.match_datetime) >= filters.date_from
-            )
+        with get_db() as db:
+            with db.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, tuple(params))
+                results = cur.fetchall()
+                
+                return jsonify({"data": [dict(row) for row in results]}), 200
 
-        if filters.date_to:
-            q = q.filter(
-                func.date(GameMatch.match_datetime) <= filters.date_to
-            )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
-        total = q.count()
-        matches = (
-            q.order_by(GameMatch.match_datetime.desc())
-             .offset((filters.page - 1) * filters.limit)
-             .limit(filters.limit)
-             .all()
-        )
 
-        data = [MatchOut.model_validate(m).model_dump(mode="json") for m in matches]
-        total_pages = max(1, (total + filters.limit - 1) // filters.limit)
-        meta = PaginationMeta(
-            page=filters.page, limit=filters.limit, total=total,
-            total_pages=total_pages,
-            has_next=filters.page < total_pages,
-            has_prev=filters.page > 1,
-        ).model_dump()
 
-        return jsonify({"data": data, "meta": meta}), 200
+# Paste this in api/v1/matches.py:
 
-    finally:
-        db.close()
+@matches_bp.route("/search", methods=["GET"])
+def search_matches_endpoint():
+    from database import get_db
+    from psycopg2.extras import RealDictCursor
+    from flask import request, jsonify
 
+    try:
+        team_name = request.args.get("team_name")
+        player_name = request.args.get("player_name")
+        date_from = request.args.get("date_from")
+        date_to = request.args.get("date_to")
+        league_id = request.args.get("league_id", type=int)
+        status = request.args.get("status")
+
+        with get_db() as db:
+            with db.cursor(cursor_factory=RealDictCursor) as cur:
+                # 🚀 FIXED: We wrapped your function in a SELECT that JOINs the game_match table to grab the IDs!
+                query = """
+                    SELECT s.*, m.home_team_id, m.away_team_id 
+                    FROM search_matches(
+                        p_team_name := %s,
+                        p_player_name := %s,
+                        p_date_from := %s,
+                        p_date_to := %s,
+                        p_league_id := %s,
+                        p_status := %s
+                    ) s
+                    JOIN game_match m ON s.match_id = m.match_id
+                """
+                
+                cur.execute(query, (team_name, player_name, date_from, date_to, league_id, status))
+                results = cur.fetchall()
+                
+                return jsonify({"data": [dict(row) for row in results]}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "code": "DB_ERROR"}), 500
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET /api/v1/matches/live
@@ -169,37 +170,36 @@ def list_matches():
 
 @matches_bp.route("/live", methods=["GET"])
 def list_live_matches():
-    """
-    All matches with status='live', joined with home/away team names.
-    Uses raw SQL query for explicit control over the joins.
+    from psycopg2.extras import RealDictCursor
+    from database import get_db
 
-    Response 200:
-        { "data": [match_row, …], "total": <int> }
-    """
-    db = get_db()
     try:
-        query = text("""
-            SELECT
-                m.match_id, m.status, m.home_score, m.away_score,
-                m.elapsed_time, m.match_datetime, m.venue,
-                ht.name AS home_team_name, ht.logo_url AS home_logo,
-                at.name AS away_team_name, at.logo_url AS away_logo,
-                l.name AS league_name, l.season
-            FROM game_match m
-            JOIN team ht ON ht.team_id = m.home_team_id
-            JOIN team at ON at.team_id = m.away_team_id
-            JOIN league l ON l.league_id = m.league_id
-            WHERE m.status = 'live'
-            ORDER BY m.match_datetime DESC
-        """)
-        
-        results = db.execute(query).fetchall()
-        data = [dict(row._mapping) for row in results]
-        
-        return jsonify({"data": data, "total": len(data)}), 200
+        sport = request.args.get("sport")
 
-    finally:
-        db.close()
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            # Use v.* to keep all original view columns, then alias the gm
+            # IDs so they overwrite any NULLs the view returns for those fields.
+            cur.execute("""
+                SELECT
+                    v.*,
+                    gm.home_team_id AS home_team_id,
+                    gm.away_team_id AS away_team_id
+                FROM v_live_matches v
+                JOIN game_match gm ON gm.match_id = v.match_id
+                WHERE (%s IS NULL OR v.sport_name = %s)
+                ORDER BY v.match_datetime DESC
+            """, (sport, sport))
+
+            results = cur.fetchall()
+            data = [dict(row) for row in results]
+
+            return jsonify({"data": data, "total": len(data)}), 200
+
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -208,31 +208,35 @@ def list_live_matches():
 
 @matches_bp.route("/<int:match_id>", methods=["GET"])
 def get_match(match_id: int):
-    """
-    Full match detail: teams, league, score, elapsed, venue,
-    player_match_stat rows, and highlights.
+    from psycopg2.extras import RealDictCursor
+    from database import get_db
 
-    Response 200: MatchDetailOut
-    Response 404: ErrorOut
-    """
-    db = get_db()
     try:
-        match = (
-            db.query(GameMatch)
-            .options(*_MATCH_DETAIL_LOAD)
-            .filter(GameMatch.match_id == match_id)
-            .first()
-        )
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT
+                    v.*,
+                    gm.home_team_id AS home_team_id,
+                    gm.away_team_id AS away_team_id
+                FROM v_match_detail v
+                JOIN game_match gm ON gm.match_id = v.match_id
+                WHERE v.match_id = %s
+            """, (match_id,))
 
-        if match is None:
-            return jsonify(
-                ErrorOut(error=f"Match {match_id} not found", code="NOT_FOUND").model_dump()
-            ), 404
+            result = cur.fetchone()
 
-        return jsonify(MatchDetailOut.model_validate(match).model_dump(mode="json")), 200
+            if result is None:
+                return jsonify(
+                    ErrorOut(error=f"Match {match_id} not found", code="NOT_FOUND").model_dump()
+                ), 404
 
-    finally:
-        db.close()
+            return jsonify(dict(result)), 200
+
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -318,45 +322,48 @@ def get_match_player_stats(match_id: int):
 @matches_bp.route("/<int:match_id>/reviews", methods=["GET"])
 def get_match_reviews(match_id: int):
     """
-    All reviews for a match plus AVG(rating).
+    All reviews for a match plus AVG(rating) using get_match_review_summary() function.
 
-    Response 200: ReviewWithStats
+    Response 200: { "average_rating": ..., "total_reviews": ..., "reviews": [...] }
     Response 404: ErrorOut  (match not found)
     """
-    db = get_db()
+    from psycopg2.extras import RealDictCursor
+    from database import get_db
+
     try:
-        match = db.query(GameMatch).filter(GameMatch.match_id == match_id).first()
-        if match is None:
-            return jsonify(
-                ErrorOut(error=f"Match {match_id} not found", code="NOT_FOUND").model_dump()
-            ), 404
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        reviews = (
-            db.query(Review)
-            .options(joinedload(Review.user))
-            .filter(Review.match_id == match_id, Review.is_hidden == False)
-            .order_by(Review.created_at.desc())
-            .all()
-        )
+            cur.execute("SELECT match_id FROM game_match WHERE match_id = %s", (match_id,))
+            if not cur.fetchone():
+                return jsonify(
+                    ErrorOut(error=f"Match {match_id} not found", code="NOT_FOUND").model_dump()
+                ), 404
 
-        agg = (
-            db.query(func.avg(Review.rating), func.count(Review.review_id))
-            .filter(Review.match_id == match_id, Review.is_hidden == False)
-            .one()
-        )
-        avg_rating, total = agg
-        avg_rating = round(float(avg_rating), 2) if avg_rating else None
+            cur.execute("SELECT * FROM get_match_review_summary(%s)", (match_id,))
+            results = cur.fetchall()
 
-        response = ReviewWithStats(
-            average_rating=avg_rating,
-            total_reviews=total,
-            reviews=[ReviewOut.model_validate(r) for r in reviews],
-        )
+            if not results:
+                return jsonify({
+                    "average_rating": None,
+                    "total_reviews": 0,
+                    "reviews": []
+                }), 200
 
-        return jsonify(response.model_dump(mode="json")), 200
+            first_row = results[0]
 
-    finally:
-        db.close()
+            response = {
+                "average_rating": first_row.get("average_rating"),
+                "total_reviews": first_row.get("total_reviews", len(results)),
+                "reviews": [dict(row) for row in results]
+            }
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,7 +392,6 @@ def post_match_review(match_id: int):
                 ErrorOut(error=f"Match {match_id} not found", code="NOT_FOUND").model_dump()
             ), 404
 
-        # Check duplicate
         existing = (
             db.query(Review)
             .filter(Review.match_id == match_id, Review.user_id == user_id)
@@ -417,7 +423,6 @@ def post_match_review(match_id: int):
         db.commit()
         db.refresh(review)
 
-        # Reload with user relationship
         review = (
             db.query(Review)
             .options(joinedload(Review.user))
@@ -520,3 +525,27 @@ def delete_highlight(highlight_id: int):
 
     finally:
         db.close()
+
+
+@matches_bp.route("/feed", methods=["GET"])
+@require_auth
+def get_personalized_feed():
+    from database import get_db
+    from psycopg2.extras import RealDictCursor
+
+    # db is already your raw psycopg2 connection!
+    with get_db() as db: 
+        try:
+            user_id = g.user.get("sub")
+            
+            # Create a cursor from the connection
+            with db.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM get_user_feed(%s)", (user_id,))
+                results = cur.fetchall()
+                
+                return jsonify({"data": [dict(row) for row in results]}), 200
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({"error": str(e), "code": "DB_ERROR"}), 500

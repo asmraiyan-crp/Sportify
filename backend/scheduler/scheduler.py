@@ -43,23 +43,34 @@ def get_db_connection():
     return psycopg2.connect(PSYCOPG2_DATABASE_URL, sslmode="require")
 
 
-def log_sync(conn, status, records_fetched=0, records_upserted=0, error_message=None):
+def log_sync(conn, status, sync_type='live_scores', started_at=None, records_fetched=0, records_upserted=0, error_message=None):
     """
     Write to sync_log table.
     
     Args:
         conn: Database connection
         status: 'running', 'success', or 'failed'
+        sync_type: Type of sync ('live_scores', 'fixtures', 'player_stats')
+        started_at: Datetime object of when the job actually started
         records_fetched: Number of records fetched from API
         records_upserted: Number of records upserted to DB
         error_message: Error message if failed
     """
     cur = conn.cursor()
+    now = datetime.now(timezone.utc)
+    
+    # If started_at wasn't provided, fallback to now to prevent NotNullViolation
+    if started_at is None:
+        started_at = now
+        
+    # finished_at is None if running, otherwise it's now
+    finished_at = None if status == 'running' else now
+    
     cur.execute("""
-        INSERT INTO sync_log (status, records_fetched, records_upserted, error_message, created_at)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING sync_log_id;
-    """, (status, records_fetched, records_upserted, error_message, datetime.now(timezone.utc)))
+        INSERT INTO sync_log (sync_type, started_at, finished_at, records_fetched, records_upserted, status, error_message)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING log_id;
+    """, (sync_type, started_at, finished_at, records_fetched, records_upserted, status, error_message))
     
     log_id = cur.fetchone()[0]
     conn.commit()
@@ -71,23 +82,29 @@ def log_sync(conn, status, records_fetched=0, records_upserted=0, error_message=
 def sync_live_scores():
     """JOB 1: Sync live scores every 60 seconds."""
     conn = None
+    started_at = datetime.now(timezone.utc) # Track exact start time
+    
     try:
         conn = get_db_connection()
         resolver = get_resolver()
         
         # Log start
-        log_sync(conn, "running")
+        log_sync(conn, "running", 'live_scores', started_at=started_at)
         
         print("[SYNC] Fetching live scores...")
         
         # Fetch live fixtures
-        url = f"{BASE_URL}/fixtures/live"
+        
+        # 🚀 FIXED: Use the correct V3 endpoint for live matches
+        url = f"{BASE_URL}/livescores/inplay"
         params = {"include": "participants;scores;periods;state"}
+        
         response = requests.get(url, headers=HEADERS, params=params)
         
         if response.status_code != 200:
             msg = f"API returned {response.status_code}"
-            log_sync(conn, "failed", error_message=msg)
+            # Log failure with the exact start time
+            log_sync(conn, "failed", 'live_scores', started_at=started_at, error_message=msg)
             print(f"  ✗ {msg}")
             return
         
@@ -160,13 +177,14 @@ def sync_live_scores():
         conn.commit()
         cur.close()
         
-        log_sync(conn, "success", records_fetched, records_upserted)
+        log_sync(conn, "success", 'live_scores', started_at=started_at, records_fetched=records_fetched, records_upserted=records_upserted)
         print(f"  ✓ Synced {records_upserted}/{records_fetched} fixtures")
     
     except Exception as e:
         print(f"  ✗ Error: {e}")
         if conn:
-            log_sync(conn, "failed", error_message=str(e))
+            conn.rollback() # CRITICAL: Clear aborted transaction state
+            log_sync(conn, "failed", 'live_scores', started_at=started_at, error_message=str(e))
     
     finally:
         if conn:
@@ -176,28 +194,36 @@ def sync_live_scores():
 def sync_fixtures():
     """JOB 2: Sync upcoming fixtures every 6 hours."""
     conn = None
+    started_at = datetime.now(timezone.utc)
+    
     try:
         conn = get_db_connection()
         resolver = get_resolver()
         
-        log_sync(conn, "running")
+        log_sync(conn, "running", 'fixtures', started_at=started_at)
         print("[SYNC] Fetching upcoming fixtures...")
         
         # Date range: today to today+7days
         today = datetime.now(timezone.utc).date()
         week_later = today + timedelta(days=7)
         
-        url = f"{BASE_URL}/fixtures"
+        # Date range: today to today+7days
+        today = datetime.now(timezone.utc).date()
+        week_later = today + timedelta(days=7)
+        
+        # 🚀 FIXED: Date ranges are now part of the URL path in V3!
+        url = f"{BASE_URL}/fixtures/between/{today}/{week_later}"
+        
+        # Removed the invalid filter parameter
         params = {
-            "include": "participants;state",
-            "filters": f"fixturesBetween:{today},{week_later}"
+            "include": "participants;state"
         }
         
         response = requests.get(url, headers=HEADERS, params=params)
         
         if response.status_code != 200:
             msg = f"API returned {response.status_code}"
-            log_sync(conn, "failed", error_message=msg)
+            log_sync(conn, "failed", 'fixtures', started_at=started_at, error_message=msg)
             print(f"  ✗ {msg}")
             return
         
@@ -261,13 +287,14 @@ def sync_fixtures():
         conn.commit()
         cur.close()
         
-        log_sync(conn, "success", records_fetched, records_upserted)
+        log_sync(conn, "success", 'fixtures', started_at=started_at, records_fetched=records_fetched, records_upserted=records_upserted)
         print(f"  ✓ Synced {records_upserted}/{records_fetched} fixtures")
     
     except Exception as e:
         print(f"  ✗ Error: {e}")
         if conn:
-            log_sync(conn, "failed", error_message=str(e))
+            conn.rollback() # CRITICAL: Clear aborted transaction state
+            log_sync(conn, "failed", 'fixtures', started_at=started_at, error_message=str(e))
     
     finally:
         if conn:
@@ -277,11 +304,13 @@ def sync_fixtures():
 def sync_player_stats():
     """JOB 3: Sync player stats every 30 minutes."""
     conn = None
+    started_at = datetime.now(timezone.utc)
+    
     try:
         conn = get_db_connection()
         resolver = get_resolver()
         
-        log_sync(conn, "running")
+        log_sync(conn, "running", 'player_stats', started_at=started_at)
         print("[SYNC] Fetching player stats...")
         
         # Find finished matches with no player stats yet, updated in last 2 hours
@@ -360,13 +389,14 @@ def sync_player_stats():
         conn.commit()
         cur.close()
         
-        log_sync(conn, "success", records_fetched, records_upserted)
+        log_sync(conn, "success", 'player_stats', started_at=started_at, records_fetched=records_fetched, records_upserted=records_upserted)
         print(f"  ✓ Synced {records_upserted} player stats")
     
     except Exception as e:
         print(f"  ✗ Error: {e}")
         if conn:
-            log_sync(conn, "failed", error_message=str(e))
+            conn.rollback() # CRITICAL: Clear aborted transaction state
+            log_sync(conn, "failed", 'player_stats', started_at=started_at, error_message=str(e))
     
     finally:
         if conn:

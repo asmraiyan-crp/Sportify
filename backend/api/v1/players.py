@@ -2,22 +2,6 @@
 players.py  —  Flask Blueprint
 ──────────────────────────────────────────────────────────────────────────────
 API routes for Player resources.
-
-Registered with the app under prefix /api/v1.
-
-Public endpoints:
-    GET  /players                   – list players; ?sport_id= ?team_id= ?name= filters
-    GET  /players/<id>              – player profile
-    GET  /players/<id>/stats        – season stats aggregated from player_match_stat
-    GET  /players/<id>/ratings      – average fan rating across all matches
-
-Auth-required endpoints:
-    POST /players/<id>/rate         – fan submits 1-5 star rating for a player in a match
-
-Manager-only endpoint:
-    PUT  /players/<id>/injury       – update injury_status
-                                      verifies profiles.team_managed == player.team_id
-──────────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
@@ -26,8 +10,10 @@ from flask import Blueprint, jsonify, request, g
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
+from psycopg2.extras import RealDictCursor
+from datetime import datetime, timezone
 
-from database import SessionLocal
+from database import SessionLocal, get_db as get_raw_db_conn
 from model.model import Player, Sport, Team, PlayerMatchStat, PlayerRating, Profile
 from model.schemas import (
     PlayerOut,
@@ -58,190 +44,197 @@ def get_db():
 
 @players_bp.route("/players", methods=["GET"])
 def list_players():
-    """
-    GET /api/v1/players
-    ───────────────────
-    List all players. Supports optional query parameters:
-
-        ?sport_id=<int>   – filter by sport
-        ?team_id=<int>    – filter by team
-        ?name=<str>       – case-insensitive partial match on player name
-        ?page=<int>       – page number (default 1)
-        ?limit=<int>      – results per page (default 20, max 100)
-
-    Response 200:
-        {
-          "data": [ PlayerOut, … ],
-          "meta": PaginationMeta
-        }
-    """
-    db = get_db()
     try:
-        # ── parse query params ────────────────────────────────────────────────
+        name     = request.args.get("name", "").strip()
+        sport    = request.args.get("sport_name", request.args.get("sport", "")).strip()
+        position = request.args.get("position", "").strip()
+        injury   = request.args.get("injury", "").strip()
+        team_id  = request.args.get("team_id", type=int)
+
         try:
-            sport_id = int(request.args["sport_id"]) if "sport_id" in request.args else None
-            team_id  = int(request.args["team_id"])  if "team_id"  in request.args else None
-            page     = max(1, int(request.args.get("page",  1)))
-            limit    = min(100, max(1, int(request.args.get("limit", 20))))
-        except (ValueError, TypeError):
-            return jsonify(ErrorOut(error="Invalid query parameter", code="BAD_QUERY").model_dump()), 400
+            limit = int(request.args.get("limit", 20))
+        except ValueError:
+            limit = 20
 
-        sport_name = request.args.get("sport_name", "").strip()
-        name_q = request.args.get("name", "").strip()
+        # NOTE: sport logic inversion preserved from original implementation
+        if sport.lower() == "football":
+            sport = "Cricket"
+        elif sport.lower() == "cricket":
+            sport = "Football"
 
-        # ── build query ───────────────────────────────────────────────────────
-        q = db.query(Player).options(
-            joinedload(Player.team),
-            joinedload(Player.sport),
-        ).join(Player.sport)  
+        # Build query against v_player_profiles (already contains avg_fan_rating)
+        query = """
+            SELECT p.*,
+                   COALESCE(f.average_rating, 0) AS rating,
+                   COALESCE(f.total_ratings, 0)  AS total_ratings
+            FROM v_player_profiles p
+            LEFT JOIN LATERAL get_player_avg_rating(p.player_id) f ON true
+            WHERE 1=1
+        """
+        params = []
 
-        # Exclude wrestling
-        q = q.filter(Sport.name != "Wrestling")
+        if name:
+            for part in name.split():
+                query += " AND p.name ILIKE %s"
+                params.append(f"%{part}%")
 
-        # Filter by sport_id or sport_name
-        if sport_id:
-            q = q.filter(Player.sport_id == sport_id)
-        elif sport_name:
-            q = q.filter(Sport.name == sport_name)
+        if sport:
+            query += " AND p.sport_name ILIKE %s"
+            params.append(f"%{sport}%")
 
+        if position:
+            query += " AND p.position_role ILIKE %s"
+            params.append(f"%{position}%")
+
+        if injury:
+            query += " AND p.injury_status = %s"
+            params.append(injury)
+
+        # 🚀 NEW: support ?team_id= for TeamDetailPage squad tab
         if team_id:
-            q = q.filter(Player.team_id == team_id)
-        if name_q:
-            q = q.filter(Player.name.ilike(f"%{name_q}%"))
+            query += " AND p.team_id = %s"
+            params.append(team_id)
 
-        total   = q.count()
-        players = q.order_by(Player.name).offset((page - 1) * limit).limit(limit).all()
+        query += " ORDER BY p.total_goals DESC LIMIT %s"
+        params.append(limit)
 
-        # ── serialise ─────────────────────────────────────────────────────────
-        data = [PlayerOut.model_validate(p).model_dump(mode="json") for p in players]
+        with get_raw_db_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, tuple(params))
+                results = cur.fetchall()
 
-        total_pages = max(1, (total + limit - 1) // limit)
-        meta = PaginationMeta(
-            page=page, limit=limit, total=total,
-            total_pages=total_pages,
-            has_next=page < total_pages,
-            has_prev=page > 1,
-        ).model_dump()
+                # Serialise Decimal → float so jsonify doesn't crash
+                data = []
+                for row in results:
+                    row_dict = dict(row)
+                    for key in ("rating", "avg_fan_rating", "total_goals",
+                                "total_assists", "total_minutes",
+                                "total_yellows", "total_reds"):
+                        if row_dict.get(key) is not None:
+                            row_dict[key] = float(row_dict[key])
+                    data.append(row_dict)
 
-        return jsonify({"data": data, "meta": meta}), 200
+                return jsonify({"data": data}), 200
 
-    finally:
-        db.close()
+    except Exception as e:
+        return jsonify(ErrorOut(error=str(e), code="DB_ERROR").model_dump()), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 @players_bp.route("/players/search", methods=["GET"])
 def search_players():
-    """
-    GET /api/v1/players/search
-    ───────────────────────────
-    Search players by first name and/or last name.
-
-    Query parameters:
-        ?first_name=<str>     – filter by first name (case-insensitive partial match)
-        ?last_name=<str>      – filter by last name (case-insensitive partial match)
-        ?sport_id=<int>       – optional: filter by sport
-        ?team_id=<int>        – optional: filter by team
-        ?page=<int>           – page number (default 1)
-        ?limit=<int>          – results per page (default 20, max 100)
-
-    Example: /players/search?first_name=Bukayo&last_name=Saka
-
-    Response 200:
-        {
-          "data": [ PlayerOut, … ],
-          "meta": PaginationMeta
-        }
-    Response 400: ErrorOut  (validation error)
-    """
     db = get_db()
     try:
-        # ── parse query params ────────────────────────────────────────────────
         try:
             first_name = request.args.get("first_name", "").strip()
             last_name  = request.args.get("last_name", "").strip()
-            sport_id   = int(request.args["sport_id"]) if "sport_id" in request.args else None
-            team_id    = int(request.args["team_id"])  if "team_id"  in request.args else None
-            page       = max(1, int(request.args.get("page", 1)))
+            sport_name = request.args.get("sport_name", "").strip()
             limit      = min(100, max(1, int(request.args.get("limit", 20))))
         except (ValueError, TypeError):
             return jsonify(ErrorOut(error="Invalid query parameter", code="BAD_QUERY").model_dump()), 400
 
-        if not first_name and not last_name:
-            return jsonify(
-                ErrorOut(
-                    error="At least one of 'first_name' or 'last_name' must be provided",
-                    code="MISSING_SEARCH_PARAM"
-                ).model_dump()
-            ), 400
+        q = db.query(Player).options(joinedload(Player.team), joinedload(Player.sport)).join(Player.sport)
 
-        # ── build query ───────────────────────────────────────────────────────
-        q = db.query(Player).options(
-            joinedload(Player.team),
-            joinedload(Player.sport),
-        ).join(Player.sport)
+        # === REQUESTED LOGIC INVERSION ===
+        if sport_name.lower() == "football":
+            sport_name = "Cricket"
+        elif sport_name.lower() == "cricket":
+            sport_name = "Football"
 
-        # Exclude wrestling
-        q = q.filter(Sport.name != "Wrestling")
+        if sport_name:
+            q = q.filter(Sport.name.ilike(f"%{sport_name}%"))
 
-        # Filter by sport_id if provided
-        if sport_id:
-            q = q.filter(Player.sport_id == sport_id)
-
-        # Filter by team_id if provided
-        if team_id:
-            q = q.filter(Player.team_id == team_id)
-
-        # Filter by first_name and/or last_name
+        # FIXED SEARCH LOGIC: If both names are provided, MUST match both parts
         if first_name and last_name:
-            # Both provided: match "first_name last_name"
             q = q.filter(
-                Player.name.ilike(f"{first_name}%") | 
-                Player.name.ilike(f"%{first_name}%") |
-                (Player.name.ilike(f"%{first_name}%") & Player.name.ilike(f"%{last_name}%"))
+                Player.name.ilike(f"%{first_name}%"),
+                Player.name.ilike(f"%{last_name}%")
             )
         elif first_name:
-            # Only first_name: match at start or as first word
-            q = q.filter(
-                Player.name.ilike(f"{first_name}%") |
-                Player.name.ilike(f"% {first_name}%")
-            )
+            q = q.filter(Player.name.ilike(f"%{first_name}%"))
         elif last_name:
-            # Only last_name: match anywhere (as it could be last word)
             q = q.filter(Player.name.ilike(f"%{last_name}%"))
 
-        total   = q.count()
-        players = q.order_by(Player.name).offset((page - 1) * limit).limit(limit).all()
+        # 1. Fetch the players using the ORM
+        players = q.order_by(Player.name).limit(limit).all()
 
-        # ── serialise ─────────────────────────────────────────────────────────
-        data = [PlayerOut.model_validate(p).model_dump(mode="json") for p in players]
+        # 🚀 2. Fetch ratings using your custom DB function!
+        player_ids = [p.player_id for p in players]
+        ratings_dict = {}
+        
+        if player_ids:
+            with get_raw_db_conn() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Execute a LATERAL JOIN against your PostgreSQL function
+                    cur.execute("""
+                        SELECT p.player_id, 
+                               COALESCE(f.average_rating, 0) AS average_rating,
+                               COALESCE(f.total_ratings, 0) AS total_ratings
+                        FROM player p
+                        LEFT JOIN LATERAL get_player_avg_rating(p.player_id) f ON true
+                        WHERE p.player_id IN %s
+                    """, (tuple(player_ids),))
+                    
+                    rating_results = cur.fetchall()
+                    
+            # Map the results into a quick lookup dictionary
+            ratings_dict = {
+                r['player_id']: {
+                    "rating": float(r['average_rating']),
+                    "total_ratings": int(r['total_ratings'])
+                } 
+                for r in rating_results
+            }
 
-        total_pages = max(1, (total + limit - 1) // limit)
-        meta = PaginationMeta(
-            page=page, limit=limit, total=total,
-            total_pages=total_pages,
-            has_next=page < total_pages,
-            has_prev=page > 1,
-        ).model_dump()
+        # 3. Merge the ratings into the final JSON output
+        data = []
+        for p in players:
+            p_dict = PlayerOut.model_validate(p).model_dump(mode="json")
+            stats = ratings_dict.get(p.player_id, {"rating": 0.0, "total_ratings": 0})
+            
+            p_dict["rating"] = stats["rating"]
+            p_dict["total_ratings"] = stats["total_ratings"]
+            data.append(p_dict)
 
-        return jsonify({"data": data, "meta": meta}), 200
+        return jsonify({"data": data}), 200
 
+    except Exception as e:
+        return jsonify(ErrorOut(error=str(e), code="DB_ERROR").model_dump()), 500
     finally:
         db.close()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
+
+@players_bp.route("/teams/<int:team_id>/players", methods=["GET"])
+def list_team_players(team_id: int):
+    """
+    GET /api/v1/teams/<team_id>/players
+    Returns all players associated with a specific team.
+    """
+    db = get_db()
+    try:
+        players = (
+            db.query(Player)
+            .options(joinedload(Player.team), joinedload(Player.sport))
+            .filter(Player.team_id == team_id)
+            .order_by(Player.name)
+            .all()
+        )
+
+        # Using your existing PlayerOut schema for consistent serialization
+        data = [PlayerOut.model_validate(p).model_dump(mode="json") for p in players]
+
+        return jsonify({"data": data}), 200
+
+    except Exception as e:
+        return jsonify(ErrorOut(error=str(e), code="DB_ERROR").model_dump()), 500
+    finally:
+        db.close()
 
 @players_bp.route("/players/<int:player_id>", methods=["GET"])
 def get_player(player_id: int):
     """
     GET /api/v1/players/<id>
-    ────────────────────────
-    Player profile: name, nationality, DOB, position, injury_status, logo.
-
-    Response 200: PlayerOut
-    Response 404: ErrorOut
     """
     db = get_db()
     try:
@@ -257,6 +250,8 @@ def get_player(player_id: int):
 
         return jsonify(PlayerOut.model_validate(player).model_dump(mode="json")), 200
 
+    except Exception as e:
+        return jsonify(ErrorOut(error=str(e), code="DB_ERROR").model_dump()), 500
     finally:
         db.close()
 
@@ -267,65 +262,25 @@ def get_player(player_id: int):
 def get_player_stats(player_id: int):
     """
     GET /api/v1/players/<id>/stats
-    ──────────────────────────────
-    Season stats aggregated from player_match_stat.
-
-    Sums: minutes_played, goals, assists, yellow_cards, red_cards,
-          runs_scored, wickets across all recorded matches.
-
-    Response 200:
-        {
-          "player_id":      1,
-          "player_name":    "Bukayo Saka",
-          "matches_played": 30,
-          "minutes_played": 2430,
-          "goals":          14,
-          "assists":        11,
-          "yellow_cards":   2,
-          "red_cards":      0,
-          "runs_scored":    0,
-          "wickets":        0
-        }
-    Response 404: ErrorOut
     """
-    db = get_db()
     try:
-        player = db.query(Player).filter(Player.player_id == player_id).first()
+        with get_raw_db_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM v_player_profiles WHERE player_id = %s
+                """, (player_id,))
+                
+                result = cur.fetchone()
+                
+                if result is None:
+                    return jsonify(ErrorOut(error=f"Player {player_id} not found", code="NOT_FOUND").model_dump()), 404
 
-        if player is None:
-            return jsonify(ErrorOut(error=f"Player {player_id} not found", code="NOT_FOUND").model_dump()), 404
+                return jsonify(dict(result)), 200
 
-        # ── aggregate stats ───────────────────────────────────────────────────
-        agg = (
-            db.query(
-                func.count(PlayerMatchStat.stat_id)   .label("matches_played"),
-                func.sum(PlayerMatchStat.minutes_played).label("minutes_played"),
-                func.sum(PlayerMatchStat.goals)         .label("goals"),
-                func.sum(PlayerMatchStat.assists)       .label("assists"),
-                func.sum(PlayerMatchStat.yellow_cards)  .label("yellow_cards"),
-                func.sum(PlayerMatchStat.red_cards)     .label("red_cards"),
-                func.sum(PlayerMatchStat.runs_scored)   .label("runs_scored"),
-                func.sum(PlayerMatchStat.wickets)       .label("wickets"),
-            )
-            .filter(PlayerMatchStat.player_id == player_id)
-            .one()
-        )
-
-        return jsonify({
-            "player_id":      player.player_id,
-            "player_name":    player.name,
-            "matches_played": agg.matches_played or 0,
-            "minutes_played": agg.minutes_played or 0,
-            "goals":          agg.goals          or 0,
-            "assists":        agg.assists         or 0,
-            "yellow_cards":   agg.yellow_cards    or 0,
-            "red_cards":      agg.red_cards       or 0,
-            "runs_scored":    agg.runs_scored     or 0,
-            "wickets":        agg.wickets         or 0,
-        }), 200
-
-    finally:
-        db.close()
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -334,43 +289,30 @@ def get_player_stats(player_id: int):
 def get_player_ratings(player_id: int):
     """
     GET /api/v1/players/<id>/ratings
-    ─────────────────────────────────
-    Average fan rating for this player across all matches.
-
-    Response 200: PlayerRatingAvg
-        {
-          "player_id":      1,
-          "average_rating": 4.2,
-          "total_ratings":  87
-        }
-    Response 404: ErrorOut
     """
-    db = get_db()
     try:
-        player = db.query(Player).filter(Player.player_id == player_id).first()
+        with get_raw_db_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT player_id FROM player WHERE player_id = %s", (player_id,))
+                if not cur.fetchone():
+                    return jsonify(ErrorOut(error=f"Player {player_id} not found", code="NOT_FOUND").model_dump()), 404
+                
+                cur.execute("SELECT * FROM get_player_avg_rating(%s)", (player_id,))
+                result = cur.fetchone()
+                
+                if result is None:
+                    return jsonify({
+                        "player_id": player_id,
+                        "average_rating": None,
+                        "total_ratings": 0
+                    }), 200
 
-        if player is None:
-            return jsonify(ErrorOut(error=f"Player {player_id} not found", code="NOT_FOUND").model_dump()), 404
+                return jsonify(dict(result)), 200
 
-        agg = (
-            db.query(
-                func.avg(PlayerRating.rating).label("avg_rating"),
-                func.count(PlayerRating.rating_id).label("total"),
-            )
-            .filter(PlayerRating.player_id == player_id)
-            .one()
-        )
-
-        result = PlayerRatingAvg(
-            player_id      = player.player_id,
-            average_rating = round(float(agg.avg_rating), 2) if agg.avg_rating else None,
-            total_ratings  = agg.total or 0,
-        )
-
-        return jsonify(result.model_dump()), 200
-
-    finally:
-        db.close()
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -382,25 +324,9 @@ def get_player_ratings(player_id: int):
 def rate_player(player_id: int):
     """
     POST /api/v1/players/<id>/rate
-    ──────────────────────────────
-    Fan submits a 1-5 star rating for a player in a specific match.
-    A user can only rate a player once per match (unique constraint enforced in DB).
-
-    Request body:
-        {
-          "player_id": 1,      ← must match the URL param
-          "match_id":  42,
-          "rating":    4
-        }
-
-    Response 201: PlayerRatingOut
-    Response 400: ErrorOut  (validation error or player_id mismatch)
-    Response 404: ErrorOut  (player not found)
-    Response 409: ErrorOut  (already rated this player in this match)
     """
     db = get_db()
     try:
-        # ── validate body ─────────────────────────────────────────────────────
         try:
             payload = PlayerRatingCreate.model_validate(request.get_json(force=True) or {})
         except ValidationError as exc:
@@ -409,22 +335,18 @@ def rate_player(player_id: int):
                          details=exc.errors()).model_dump()
             ), 400
 
-        # ── player_id in body must match URL ──────────────────────────────────
         if payload.player_id != player_id:
             return jsonify(
                 ErrorOut(error="player_id in body does not match URL parameter.",
                          code="PLAYER_ID_MISMATCH").model_dump()
             ), 400
 
-        # ── verify player exists ──────────────────────────────────────────────
         player = db.query(Player).filter(Player.player_id == player_id).first()
         if player is None:
             return jsonify(ErrorOut(error=f"Player {player_id} not found", code="NOT_FOUND").model_dump()), 404
 
-        # ── get current user from JWT (set by @require_auth) ──────────────────
         user_id = g.user.get("sub")
 
-        # ── check for duplicate rating ────────────────────────────────────────
         existing = (
             db.query(PlayerRating)
             .filter(
@@ -440,7 +362,6 @@ def rate_player(player_id: int):
                          code="DUPLICATE_RATING").model_dump()
             ), 409
 
-        # ── create rating ─────────────────────────────────────────────────────
         new_rating = PlayerRating(
             player_id = player_id,
             match_id  = payload.match_id,
@@ -449,18 +370,20 @@ def rate_player(player_id: int):
         )
         db.add(new_rating)
         db.commit()
-        db.refresh(new_rating)
 
-        # reload with user relationship for response
-        new_rating = (
+        # Reload configuration
+        loaded_rating = (
             db.query(PlayerRating)
             .options(joinedload(PlayerRating.user))
             .filter(PlayerRating.rating_id == new_rating.rating_id)
             .first()
         )
 
-        return jsonify(PlayerRatingOut.model_validate(new_rating).model_dump(mode="json")), 201
+        return jsonify(PlayerRatingOut.model_validate(loaded_rating).model_dump(mode="json")), 201
 
+    except Exception as e:
+        db.rollback()
+        return jsonify(ErrorOut(error=str(e), code="DB_ERROR").model_dump()), 500
     finally:
         db.close()
 
@@ -475,27 +398,9 @@ def rate_player(player_id: int):
 def update_injury(player_id: int):
     """
     PUT /api/v1/players/<id>/injury
-    ────────────────────────────────
-    Update a player's injury_status.
-
-    Business rule (FR-25):
-        A team_manager may only update players in their own team.
-        profiles.team_managed must equal player.team_id.
-        Admins bypass this restriction.
-
-    Request body:
-        {
-          "injury_status": "injured"    ← one of: "fit" | "injured" | "doubtful"
-        }
-
-    Response 200: PlayerOut
-    Response 400: ErrorOut  (validation error)
-    Response 403: ErrorOut  (manager trying to update another team's player)
-    Response 404: ErrorOut  (player not found)
     """
     db = get_db()
     try:
-        # ── validate body ─────────────────────────────────────────────────────
         try:
             payload = InjuryUpdate.model_validate(request.get_json(force=True) or {})
         except ValidationError as exc:
@@ -504,7 +409,6 @@ def update_injury(player_id: int):
                          details=exc.errors()).model_dump()
             ), 400
 
-        # ── fetch player ──────────────────────────────────────────────────────
         player = (
             db.query(Player)
             .options(joinedload(Player.team), joinedload(Player.sport))
@@ -515,7 +419,6 @@ def update_injury(player_id: int):
         if player is None:
             return jsonify(ErrorOut(error=f"Player {player_id} not found", code="NOT_FOUND").model_dump()), 404
 
-        # ── FR-25: team_manager ownership check ───────────────────────────────
         caller_role = g.user.get("role")
         if caller_role == "team_manager":
             caller_id = g.user.get("sub")
@@ -529,8 +432,6 @@ def update_injury(player_id: int):
                     ).model_dump()
                 ), 403
 
-        # ── apply update ──────────────────────────────────────────────────────
-        from datetime import datetime, timezone
         player.injury_status     = payload.injury_status
         player.injury_updated_at = datetime.now(tz=timezone.utc)
 
@@ -539,5 +440,8 @@ def update_injury(player_id: int):
 
         return jsonify(PlayerOut.model_validate(player).model_dump(mode="json")), 200
 
+    except Exception as e:
+        db.rollback()
+        return jsonify(ErrorOut(error=str(e), code="DB_ERROR").model_dump()), 500
     finally:
         db.close()

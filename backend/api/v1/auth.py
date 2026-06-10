@@ -65,7 +65,9 @@ def register():
         {
             "email": "user@example.com",
             "password": "SecurePass123",
-            "display_name": "John Doe"  (optional)
+            "display_name": "John Doe",      (optional)
+            "role": "admin",                 (optional, defaults to "fan")
+            "team_managed": 1                (optional, required if team_manager)
         }
     
     Response: 201 Created
@@ -73,17 +75,35 @@ def register():
             "id": "uuid",
             "email": "user@example.com",
             "display_name": "John Doe",
-            "role": "fan",
+            "role": "admin",
             "is_active": true
         }
     """
     db = get_db()
     try:
-        # 1. Validate with Pydantic
         json_data = request.get_json() or {}
+        
+        # 1. Validate base fields with Pydantic
         user_data = RegisterCreate(**json_data)
         
-        # 2. Check if email already exists
+        # 2. Extract and validate role extensions
+        role = json_data.get("role", "fan")
+        team_managed = json_data.get("team_managed", None)
+        
+        valid_roles = ["fan", "team_manager", "admin"]
+        if role not in valid_roles:
+            return jsonify({
+                "error": f"Invalid role. Must be one of {valid_roles}",
+                "code": "INVALID_ROLE"
+            }), 400
+            
+        if role == "team_manager" and not team_managed:
+            return jsonify({
+                "error": "team_managed ID is required when role is team_manager",
+                "code": "MISSING_TEAM_ID"
+            }), 400
+        
+        # 3. Check if email already exists
         existing = db.query(models.Profile).filter(
             models.Profile.email == user_data.email
         ).first()
@@ -93,28 +113,29 @@ def register():
                 "code": "EMAIL_EXISTS"
             }), 409
         
-        # 3. Hash password
+        # 4. Hash password
         hashed_password = pwd_context.hash(user_data.password)
         
-        # 4. Create new profile
+        # 5. Create new profile with dynamic role
         new_profile = models.Profile(
             id=uuid4(),
             email=user_data.email,
             password_hash=hashed_password,
             display_name=user_data.display_name,
-            role="fan",  # Default role
+            role=role,
+            team_managed=team_managed,
             is_active=True,
             created_at=datetime.now(tz=timezone.utc),
             updated_at=datetime.now(tz=timezone.utc),
         )
         
         db.add(new_profile)
-        logger.info(f"[REGISTER] Adding new profile: {user_data.email}")
+        logger.info(f"[REGISTER] Adding new profile: {user_data.email} with role: {role}")
         db.commit()
         logger.info(f"[REGISTER] Committed to DB, profile ID: {new_profile.id}")
         db.refresh(new_profile)
         
-        # 5. Return profile as per ProfileOut schema
+        # 6. Return profile as per ProfileOut schema
         return jsonify(ProfileOut.model_validate(new_profile).model_dump()), 201
         
     except ValidationError as err:

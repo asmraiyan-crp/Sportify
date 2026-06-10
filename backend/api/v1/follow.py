@@ -24,10 +24,9 @@ Schemas used  : FollowingOut, FollowTeamOut, FollowPlayerOut,
 
 from __future__ import annotations
 
-from functools import wraps
 from uuid import UUID
 
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, jsonify, g
 from sqlalchemy.orm import joinedload
 
 from database import SessionLocal
@@ -39,6 +38,7 @@ from model.schemas import (
     MessageOut,
     ErrorOut,
 )
+from core.auth import require_auth  # real JWT decorator — sets g.user
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -61,74 +61,13 @@ def get_db():
     return SessionLocal()
 
 
-# ── Auth decorator ────────────────────────────────────────────────────────────
-# IMPORTANT: Replace the body of require_auth with your real JWT verification.
-# Your existing auth_bp likely already has this logic — extract it into a
-# shared decorator (e.g. in auth/utils.py) and import it here instead.
-#
-# The decorator MUST:
-#   1. Read the Authorization header  →  "Bearer <token>"
-#   2. Verify the JWT and decode the payload
-#   3. Store the user's UUID string in  g.current_user_id
-#   4. Return 401 if the token is missing or invalid
-
-def require_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return jsonify(
-                ErrorOut(error="Authorization header missing", code="UNAUTHORIZED").model_dump()
-            ), 401
-
-        token = auth_header.removeprefix("Bearer ").strip()
-
-        # ── Swap this block with your real JWT decode once auth is ready ──
-        try:
-            UUID(token)                  # validates it looks like a UUID
-            g.current_user_id = token    # treat the token itself as the user UUID
-        except ValueError:
-            return jsonify(
-                ErrorOut(error="Invalid token", code="UNAUTHORIZED").model_dump()
-            ), 401
-        # ─────────────────────────────────────────────────────────────────
-
-        return f(*args, **kwargs)
-    return decorated
-    # @wraps(f)
-    # def decorated(*args, **kwargs):
-    #     # ── STUB: remove the two lines below and add your real JWT logic ──────
-    #     # For testing without auth, hard-code a UUID that exists in your DB:
-    #     # g.current_user_id = "00000000-0000-0000-0000-000000000001"
-
-    #     auth_header = request.headers.get("Authorization", "")
-    #     if not auth_header.startswith("Bearer "):
-    #         return jsonify(
-    #             ErrorOut(error="Authorization header missing or malformed",
-    #                      code="UNAUTHORIZED").model_dump()
-    #         ), 401
-
-    #     token = auth_header.removeprefix("Bearer ").strip()
-
-    #     # ── Replace with your real JWT decode logic ───────────────────────────
-    #     # Temporary: treat the raw token value as the user UUID (for smoke tests)
-    #     # In production this MUST be replaced with actual JWT verification.
-    #     try:
-    #         UUID(token)           # validates it is a UUID
-    #         g.current_user_id = token
-    #     except ValueError:
-    #         return jsonify(
-    #             ErrorOut(error="Invalid token", code="UNAUTHORIZED").model_dump()
-    #         ), 401
-    #     # ─────────────────────────────────────────────────────────────────────
-
-    #     return f(*args, **kwargs)
-    # return decorated
-
-
 def _current_uuid() -> UUID:
-    """Return the authenticated user's UUID from g."""
-    return UUID(g.current_user_id)
+    """
+    Return the authenticated user's UUID.
+    core.auth.require_auth decodes the JWT and stores the payload in g.user.
+    The 'sub' claim holds the user's UUID string.
+    """
+    return UUID(g.user["sub"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -180,6 +119,46 @@ def get_following():
 
     finally:
         db.close()
+
+
+@me_bp.route("/me/feed", methods=["GET"])
+@require_auth
+def get_user_feed():
+    """
+    GET /api/v1/users/me/feed
+    ─────────────────────────
+    Personalized match feed from teams the user follows using get_user_feed() DB function.
+
+    Response 200:
+        {
+          "matches": [ match_row, … ],
+          "total": <int>
+        }
+    """
+    from psycopg2.extras import RealDictCursor
+    from database import get_db
+    
+    try:
+        uid = _current_uuid()
+
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("""
+                SELECT * FROM get_user_feed(%s)
+            """, (str(uid),))
+            
+            results = cur.fetchall()
+            matches = [dict(row) for row in results]
+            
+            return jsonify({
+                "matches": matches,
+                "total": len(matches)
+            }), 200
+
+    except Exception as e:
+        return jsonify(
+            ErrorOut(error=str(e), code="DB_ERROR").model_dump()
+        ), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════

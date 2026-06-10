@@ -1,7 +1,10 @@
 """Database connection and session management for Sportify backend."""
 
+import os
+from contextlib import contextmanager
 from typing import Generator
 
+import psycopg2
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker, Session, scoped_session
@@ -17,6 +20,9 @@ DATABASE_URL = URL.create(
 	port=6543,
 	database="postgres",
 )
+
+# Raw database URL for psycopg2 (without SQLAlchemy driver prefix)
+PSYCOPG2_DATABASE_URL = "postgresql://postgres.pyahykjyflsxnzlzudep:QcFDM5kKBO2pE2Qn@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 # Create engine with SSL options for Supabase
 engine = create_engine(
@@ -56,3 +62,20 @@ def init_db():
 def get_session() -> Session:
     """Get a raw, new database session (useful for background tasks/scripts)."""
     return SessionLocal()
+
+
+@contextmanager
+def get_db():
+    """
+    Context manager for psycopg2 connections with SSL.
+    
+    Usage:
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT * FROM table")
+    """
+    conn = psycopg2.connect(PSYCOPG2_DATABASE_URL, sslmode="require")
+    try:
+        yield conn
+    finally:
+        conn.close()

@@ -26,11 +26,14 @@ if not SPORTMONKS_API_KEY:
 BASE_URL = "https://api.sportmonks.com/v3/football"
 HEADERS = {"Authorization": SPORTMONKS_API_KEY}
 
-# SportMonks free tier leagues ONLY (Option A)
-# The season IDs will be fetched dynamically, so the hardcoded ones here are just fallbacks
+# Your selected premium leagues
 LEAGUES_TO_SEED = [
-    {"id": 501, "name": "Scottish Premiership", "season_id": 23672, "country": "Scotland"}, 
-    {"id": 271, "name": "Danish Superliga", "season_id": 23611, "country": "Denmark"},
+    {"id": 8, "name": "Premier League", "country": "England"},
+    {"id": 564, "name": "La Liga", "country": "Spain"},
+    {"id": 570, "name": "Copa del Rey", "country": "Spain"},
+    {"id": 82, "name": "Bundesliga", "country": "Germany"},
+    {"id": 574, "name": "Supercopa de España", "country": "Spain"},
+    {"id": 24, "name": "UEFA Super Cup", "country": "Europe"} 
 ]
 
 def get_db_connection():
@@ -173,7 +176,7 @@ def seed_players(conn):
         team_id = team["team_id"]
         team_ext_id = team["external_api_id"]
         
-        # --- NEW CODE: Use Squads endpoint with proper includes ---
+        # Use Squads endpoint with proper includes
         url = f"{BASE_URL}/squads/teams/{team_ext_id}"
         params = {
             "include": "player.position;player.nationality",
@@ -184,8 +187,6 @@ def seed_players(conn):
         
         if response.status_code != 200:
             print(f"    ✗ Failed to fetch players for team {team_ext_id}: {response.status_code}")
-            print(f"      URL: {url}")
-            print(f"      Response: {response.text[:200]}")
             continue
         
         data = response.json()
@@ -194,14 +195,12 @@ def seed_players(conn):
         players_seeded = 0
         
         for entry in squad_entries:
-            # Extract the actual player data from the squad entry
             player = entry.get("player")
             if not player:
                 continue
                 
             player_id = str(player["id"])
             
-            # --- THE FIX: Use 'or' to safely catch None values ---
             display_name = player.get("display_name") or player.get("name") or "Unknown Player"
             
             nationality_obj = player.get("nationality") or {}
@@ -211,7 +210,6 @@ def seed_players(conn):
             position_role = position_obj.get("developer_name") or "Unknown"
             
             image_path = player.get("image_path") or ""
-            # -----------------------------------------------------
             
             # Insert into player table
             cur.execute("""
