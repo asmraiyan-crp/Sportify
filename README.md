@@ -2,7 +2,7 @@
 
 A full-stack sports management and live-update web application built with **ReactJS**, **Python Flask**, and **Supabase (PostgreSQL)**.
 
-Sportify aggregates real-time data across multiple sports, including **Football**, **Cricket**, and **Wrestling**, providing users with live scoreboards, match schedules, player statistics, league standings, and interactive fan engagement features.
+Sportify aggregates real-time data across multiple sports, including **Football**, providing users with live scoreboards, match schedules, player statistics, league standings, and interactive fan engagement features.
 
 ---
 
