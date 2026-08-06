@@ -207,7 +207,7 @@ Sportify/
 ## Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/sportify.git
+git clone https://github.com/asmraiyan-crp/sportify.git
 
 cd sportify
 ```
